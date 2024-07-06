@@ -1,5 +1,12 @@
 import { LeanFileProgressProcessingInfo, ServerStoppedReason } from '@leanprover/infoview-api'
 import { Disposable, EventEmitter, OutputChannel, TextDocument, commands, window, workspace } from 'vscode'
+import { BaseLanguageClient, LanguageClientOptions } from 'vscode-languageclient/node'
+import {
+    checkAll,
+    checkIsLakeInstalledCorrectly,
+    checkIsLeanVersionUpToDate,
+    checkIsValidProjectFolder,
+} from '../diagnostics/setupDiagnostics'
 import { PreconditionCheckResult } from '../diagnostics/setupNotifs'
 import { LeanClient } from '../leanclient'
 import { ExtUri, FileUri, UntitledUri, getWorkspaceFolderUri, toExtUri } from './exturi'
@@ -38,6 +45,11 @@ export class LeanClientProvider implements Disposable {
             channel: OutputChannel,
             folderUri: ExtUri,
         ) => Promise<PreconditionCheckResult>,
+        private setupClient: (
+            clientOptions: LanguageClientOptions,
+            folderUri: ExtUri,
+            elanDefaultToolchain: string,
+        ) => Promise<BaseLanguageClient>,
     ) {
         this.outputChannel = outputChannel
         this.installer = installer
@@ -231,7 +243,7 @@ export class LeanClientProvider implements Disposable {
         logger.log('[ClientProvider] Creating LeanClient for ' + folderUri.toString())
         const elanDefaultToolchain = await this.installer.getElanDefaultToolchain(folderUri)
 
-        client = new LeanClient(folderUri, this.outputChannel, elanDefaultToolchain)
+        client = new LeanClient(folderUri, this.outputChannel, elanDefaultToolchain, this.setupClient)
         this.subscriptions.push(client)
         this.clients.set(key, client)
 
