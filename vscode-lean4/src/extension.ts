@@ -17,6 +17,7 @@ import { PreconditionCheckResult } from './diagnostics/setupNotifs'
 import { AlwaysEnabledFeatures, Exports, Lean4EnabledFeatures } from './exports'
 import { InfoProvider } from './infoview'
 import { LeanClient } from './leanclient'
+import { setupClient } from './leanclientsetup'
 import { LoogleView } from './loogleview'
 import { ManualView } from './manualview'
 import { ProjectInitializationProvider } from './projectinit'
@@ -174,6 +175,7 @@ async function activateLean4Features(
     const clientProvider = new LeanClientProvider(
         installer,
         installer.getOutputChannel(),
+        setupClient,
         checkLean4ProjectPreconditions,
     )
     context.subscriptions.push(clientProvider)
