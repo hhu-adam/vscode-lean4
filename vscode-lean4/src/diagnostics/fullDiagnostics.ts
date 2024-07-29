@@ -1,7 +1,8 @@
+import { SemVer } from 'semver'
 import { Disposable, OutputChannel, TextDocument, commands, env, window, workspace } from 'vscode'
 import { ExecutionExitCode, ExecutionResult } from '../utils/batch'
 import { ExtUri, FileUri, extUriEquals, toExtUri } from '../utils/exturi'
-import { displayInformationWithInput } from '../utils/notifs'
+import { displayError, displayInformationWithInput } from '../utils/notifs'
 import { findLeanProjectRoot } from '../utils/projectInfo'
 import {
     ElanVersionDiagnosis,
@@ -9,10 +10,13 @@ import {
     ProjectSetupDiagnosis,
     SetupDiagnoser,
     SystemQueryResult,
+    VSCodeVersionDiagnosis,
 } from './setupDiagnoser'
 
 export type FullDiagnostics = {
     systemInfo: SystemQueryResult
+    vscodeVersionDiagnosis: VSCodeVersionDiagnosis
+    extensionVersion: SemVer
     isCurlAvailable: boolean
     isGitAvailable: boolean
     elanVersionDiagnosis: ElanVersionDiagnosis
@@ -23,6 +27,15 @@ export type FullDiagnostics = {
 
 function formatCommandOutput(cmdOutput: string): string {
     return '\n```\n' + cmdOutput + '\n```'
+}
+
+function formatVSCodeVersionDiagnosis(d: VSCodeVersionDiagnosis): string {
+    switch (d.kind) {
+        case 'UpToDate':
+            return `Reasonably up-to-date (version: ${d.version.toString()})`
+        case 'Outdated':
+            return `Outdated (version: ${d.currentVersion.toString()}, recommendedVersion: ${d.recommendedVersion.toString()})`
+    }
 }
 
 function formatElanVersionDiagnosis(d: ElanVersionDiagnosis): string {
@@ -85,6 +98,8 @@ export function formatFullDiagnostics(d: FullDiagnostics): string {
         `**CPU model**: ${d.systemInfo.cpuModels}`,
         `**Available RAM**: ${d.systemInfo.totalMemory}`,
         '',
+        `**VS Code version**: ${formatVSCodeVersionDiagnosis(d.vscodeVersionDiagnosis)}`,
+        `**Lean 4 extension version**: ${d.extensionVersion}`,
         `**Curl installed**: ${d.isCurlAvailable}`,
         `**Git installed**: ${d.isGitAvailable}`,
         `**Elan**: ${formatElanVersionDiagnosis(d.elanVersionDiagnosis)}`,
@@ -104,6 +119,8 @@ export async function performFullDiagnosis(
     const diagnose = new SetupDiagnoser(channel, cwdUri)
     return {
         systemInfo: diagnose.querySystemInformation(),
+        vscodeVersionDiagnosis: diagnose.queryVSCodeVersion(),
+        extensionVersion: diagnose.queryExtensionVersion(),
         isCurlAvailable: await diagnose.checkCurlAvailable(),
         isGitAvailable: await diagnose.checkGitAvailable(),
         elanVersionDiagnosis: await diagnose.elanVersion(),
@@ -168,6 +185,12 @@ export class FullDiagnosticsProvider implements Disposable {
             this.lastActiveLeanDocumentUri !== undefined && this.lastActiveLeanDocumentUri.scheme === 'file'
                 ? await findLeanProjectRoot(this.lastActiveLeanDocumentUri)
                 : undefined
+        if (projectUri === 'FileNotFound') {
+            displayError(
+                `Cannot display setup information for file that does not exist in the file system: ${this.lastActiveLeanDocumentUri}. Please choose a different file to display the setup information for.`,
+            )
+            return
+        }
         const fullDiagnostics = await performFullDiagnosis(this.outputChannel, projectUri)
         const formattedFullDiagnostics = formatFullDiagnostics(fullDiagnostics)
         const copyToClipboardInput = 'Copy to Clipboard'

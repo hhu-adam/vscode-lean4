@@ -2,7 +2,7 @@
     "name": "lean4",
     "displayName": "lean4",
     "description": "Lean 4 language support for VS Code",
-    "version": "0.0.168",
+    "version": "0.0.176",
     "publisher": "leanprover",
     "engines": {
         "vscode": "^1.75.0"
@@ -11,12 +11,16 @@
         "Programming Languages"
     ],
     "keywords": [
-        "multi-root ready"
+        "Lean",
+        "Lean 4",
+        "Theorem Provers",
+        "InfoView"
     ],
     "repository": {
         "type": "git",
-        "url": "https://github.com/leanprover-community/vscode-lean4.git"
+        "url": "https://github.com/leanprover/vscode-lean4.git"
     },
+    "homepage": "https://lean-lang.org",
     "contributes": {
         "configuration": {
             "type": "object",
@@ -350,6 +354,12 @@
                 "category": "Lean 4",
                 "title": "Project: Fetch Mathlib Build Cache",
                 "description": "Downloads cached Mathlib build artifacts to avoid full elaboration"
+            },
+            {
+                "command": "lean4.project.fetchFileCache",
+                "category": "Lean 4",
+                "title": "Project: Fetch Mathlib Build Cache For Focused File",
+                "description": "Downloads cached Mathlib build artifacts of the focused file to avoid full elaboration"
             }
         ],
         "languages": [
@@ -580,6 +590,10 @@
                 {
                     "command": "lean4.project.fetchCache",
                     "when": "lean4.isLeanFeatureSetActive"
+                },
+                {
+                    "command": "lean4.project.fetchFileCache",
+                    "when": "lean4.isLeanFeatureSetActive"
                 }
             ],
             "editor/title": [
@@ -697,6 +711,11 @@
                     "command": "lean4.project.fetchCache",
                     "when": "lean4.isLeanFeatureSetActive",
                     "group": "2_mathlibActions@1"
+                },
+                {
+                    "command": "lean4.project.fetchFileCache",
+                    "when": "lean4.isLeanFeatureSetActive",
+                    "group": "2_mathlibActions@2"
                 }
             ],
             "lean4.titlebar.documentation": [

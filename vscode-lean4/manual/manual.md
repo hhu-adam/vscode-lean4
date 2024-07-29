@@ -311,6 +311,15 @@ When using Lean's math library, [Mathlib](https://github.com/leanprover-communit
 | :--: | 
 | *`simp?` 'Try this' widget* |
 
+#### Theming
+
+Some of the colors in the InfoView can be themed with a custom color theme or by configuring the 'Workbench: Color Customization' setting. The following components of the InfoView can be themed by setting one of the corresponding theme identifiers to the desired hex color code:
+- `lean4.infoView.hypothesisName`: Accessible hypothesis names
+- `lean4.infoView.inaccessibleHypothesisName`: Inaccessible hypothesis names
+- `lean4.infoView.goalCount`: Number of goals
+- `lean4.infoView.turnstile`: Turnstile (⊢) that separates hypotheses from the goal
+- `lean4.infoView.caseLabel`: Case labels (e.g. `case zero`)
+
 ### Hovers
 
 When hovering over parts of the code with the mouse pointer, VS Code will display additional information for that piece of code in a popup panel. Specifically:
@@ -581,8 +590,8 @@ There are two project creation commands that can be accessed using the [command 
 ### Opening projects
 
 There are two commands to open existing Lean projects that can be accessed using the [command palette](#command-palette) or by navigating to the 'Open Project…' submenu in the [command menu](#command-menu):
-1. **['Project: Open Local Project…'](command:lean4.project.open)**. This command will open a Lean 4 project in the folder specified by the folder selection dialog. This command is mostly identical to VS Code's own 'Open Folder…' command, but will also immediately ensure that the opened folder is actually a Lean 4 project.
-1. **['Project: Download Project…'](command:lean4.project.clone)**. This command will download a Lean 4 project from the given URL into the folder specified by the folder creation dialog. If the downloaded project is Lean's math library [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it, it will also download and install the current Mathlib build artifact cache.
+1. **['Project: Open Local Project…'](command:lean4.project.open)**. This command will open a Lean 4 project in the folder specified by a folder selection dialog. This command is mostly identical to VS Code's own 'Open Folder…' command, but will also immediately ensure that the opened folder is actually a Lean 4 project.
+1. **['Project: Download Project…'](command:lean4.project.clone)**. This command will download a Lean 4 project from a given URL into the folder specified by a folder creation dialog. If the downloaded project is Lean's math library [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it, it will also download and install the current Mathlib build artifact cache.
 
 ### Project actions
 
@@ -591,6 +600,7 @@ The Lean 4 VS Code extension supports the following commands that can be run in 
 1. **['Project: Clean Project'](command:lean4.project.clean)**. Removes all build artifacts for the Lean project. If the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it, it will also offer to download and install the current Mathlib build artifact cache after cleaning the project.
 1. **['Project: Update Dependency…'](command:lean4.project.updateDependency)**. Displays a list of all dependencies that can be updated. After selecting a dependency and updating it, if the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it, it will also download and install the current Mathlib build artifact cache. At the end, if the Lean toolchain of the updated project differs from the Lean toolchain of the project, the command will offer to update the Lean toolchain of the project to that of the updated dependency.
 1. **['Project: Fetch Mathlib Build Cache'](command:lean4.project.fetchCache)**. Downloads and installs the current Mathlib build artifact cache if the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it.
+1. **['Project: Fetch Mathlib Build Cache For Focused File'](command:lean4.project.fetchFileCache)**. Downloads and installs the current Mathlib build artifact for the focused file if the project is [Mathlib](https://github.com/leanprover-community/mathlib4).
 
 <br/>
 
@@ -650,6 +660,7 @@ The Lean 4 VS Code extension checks that the user's Lean setup is well-founded b
   1. Whether [Curl](https://curl.se/) and [Git](https://git-scm.com/) are installed (Error)
   1. Whether some version of Lean can be found (Error)
   1. Whether Lean's version manager [Elan](https://github.com/leanprover/elan/blob/master/README.md) is installed and reasonably up-to-date (Warning)
+  1. Whether VS Code is sufficiently up-to-date to auto-update the Lean 4 VS Code extension to the next version (Warning)
 * Project-level diagnostics are checked whenever the first Lean file of a project is opened. If there is an error-level setup issue, Lean will not launch for that project, but all of the other Lean-specific extension features will be active, provided that the global-level diagnostics did not yield an error. The following project-level aspects of the user's setup are checked:
   1. Whether Lean is being ran in an untitled file that has not been saved to the file system (Warning)
   1. Whether a lean-toolchain file can be found in the project associated with the file (Warning)
