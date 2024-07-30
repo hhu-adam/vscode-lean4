@@ -507,6 +507,7 @@ export class InfoProvider implements Disposable {
         // active client is changing.
         this.clearNotificationHandlers()
         this.clearRpcSessions(null)
+        this.webviewPanel?.dispose()
         for (const s of this.clientSubscriptions) {
             s.dispose()
         }
