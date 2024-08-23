@@ -10,6 +10,8 @@ export class FileUri {
     fsPath: string
 
     constructor(fsPath: string) {
+        // TODO: Is this robust on Windows???
+        fsPath = fsPath.replaceAll('\\', '/')
         this.scheme = 'file'
         this.fsPath = fsPath
     }
