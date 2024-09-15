@@ -60,6 +60,10 @@ export class VSCodeAbbreviationRewriter implements AbbreviationTextSource {
                     newText: changeEvent.text,
                 }))
                 this.rewriter.changeInput(changes)
+                
+                // Wait for changes to take effect
+                await new Promise(resolve => setTimeout(resolve, 0));
+
                 await this.rewriter.triggerAbbreviationReplacement()
 
                 this.updateState()
