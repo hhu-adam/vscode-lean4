@@ -13,6 +13,7 @@ import {
     WorkspaceFolder,
 } from 'vscode'
 import {
+    BaseLanguageClient,
     ClientCapabilities,
     DiagnosticSeverity,
     DidChangeTextDocumentParams,
@@ -61,6 +62,7 @@ import {
     displayNotificationWithOutput,
 } from './utils/notifs'
 import { willUseLakeServer } from './utils/projectInfo'
+import { LanguageClientWrapper } from 'monaco-editor-wrapper'
 
 interface LeanClientCapabilties {
     silentDiagnosticSupport?: boolean | undefined
@@ -76,7 +78,7 @@ export type ServerProgress = Map<ExtUri, LeanFileProgressProcessingInfo[]>
 
 export class LeanClient implements Disposable {
     running: boolean
-    private client: LanguageClient | undefined
+    private client: BaseLanguageClient | undefined
     private outputChannel: OutputChannel
     folderUri: ExtUri
     private subscriptions: Disposable[] = []
@@ -124,8 +126,9 @@ export class LeanClient implements Disposable {
     private serverFailedEmitter = new EventEmitter<string>()
     serverFailed = this.serverFailedEmitter.event
 
-    constructor(folderUri: ExtUri, outputChannel: OutputChannel) {
-        this.outputChannel = outputChannel
+    constructor(folderUri: ExtUri, outputChannel: OutputChannel,
+        private setupLanguageClient: (clientOptions: LanguageClientOptions) => Promise<BaseLanguageClient>
+    ) {        this.outputChannel = outputChannel
         this.folderUri = folderUri
         this.subscriptions.push(new Disposable(() => this.staleDepNotifier?.dispose()))
     }
@@ -229,6 +232,7 @@ export class LeanClient implements Disposable {
     private async determineToolchainOverride(
         defaultToolchain: string | undefined,
     ): Promise<{ kind: 'Override'; toolchain: string } | { kind: 'NoOverride' } | { kind: 'Error'; message: string }> {
+        /*
         const cwdUri = this.folderUri.scheme === 'file' ? this.folderUri : undefined
         const toolchainDecision = await leanRunner.decideToolchain({
             channel: this.outputChannel,
@@ -252,6 +256,7 @@ export class LeanClient implements Disposable {
             // which is not what we want.  For adhoc files we want the (default) toolchain instead.
             return { kind: 'Override', toolchain: defaultToolchain }
         }
+        */
         return { kind: 'NoOverride' }
     }
 
@@ -271,7 +276,7 @@ export class LeanClient implements Disposable {
         const toolchainOverride: string | undefined =
             toolchainOverrideResult.kind === 'Override' ? toolchainOverrideResult.toolchain : undefined
 
-        this.client = await this.setupClient(toolchainOverride)
+        this.client = await this.setupLanguageClient(this.obtainClientOptions())
 
         let insideRestart = true
         try {
@@ -723,7 +728,7 @@ export class LeanClient implements Disposable {
             fillClientCapabilities(capabilities: ClientCapabilities & { lean?: LeanClientCapabilties | undefined }) {
                 capabilities.lean = leanClientCapabilities
             },
-            dispose() {},
+            clear() {},
         }
         client.registerFeature(leanCapabilityFeature)
 

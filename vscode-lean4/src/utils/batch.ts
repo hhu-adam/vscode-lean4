@@ -39,6 +39,8 @@ export function batchExecuteWithProc(
     channel?: ExecutionChannel | undefined,
     envExtensions?: { [key: string]: string } | undefined,
 ): [ChildProcessWithoutNullStreams | 'CannotLaunch', Promise<ExecutionResult>] {
+    return ["CannotLaunch", new Promise(() => {})]
+    /*
     let stdout: string = ''
     let stderr: string = ''
     let combined: string = ''
@@ -133,6 +135,7 @@ export function batchExecuteWithProc(
     })
 
     return [proc, execPromise]
+    */
 }
 
 export async function batchExecute(
