@@ -1,3 +1,4 @@
+import path from 'path'
 import { Uri, workspace } from 'vscode'
 import { isFileInFolder, relativeFilePathInFolder } from './fsHelper'
 
@@ -49,6 +50,10 @@ export class FileUri {
         return this.asUri().toString()
     }
 
+    baseName(): string {
+        return path.basename(this.fsPath)
+    }
+
     join(...pathSegments: string[]): FileUri {
         return FileUri.fromUriOrError(Uri.joinPath(this.asUri(), ...pathSegments))
     }
@@ -66,16 +71,15 @@ export class FileUri {
     }
 }
 
-export function getWorkspaceFolderUri(uri: FileUri): FileUri | undefined {
-    const folder = workspace.getWorkspaceFolder(uri.asUri())
-    if (folder === undefined) {
-        return undefined
+export function isInWorkspaceFolder(uri: FileUri): boolean {
+    return workspace.getWorkspaceFolder(uri.asUri()) !== undefined
+}
+
+export function isWorkspaceFolder(uri: FileUri): boolean {
+    if (workspace.workspaceFolders === undefined) {
+        return false
     }
-    const folderUri = FileUri.fromUri(folder.uri)
-    if (folderUri === undefined) {
-        return undefined
-    }
-    return folderUri
+    return workspace.workspaceFolders.some(folder => uri.equalsUri(folder.uri))
 }
 
 export class UntitledUri {

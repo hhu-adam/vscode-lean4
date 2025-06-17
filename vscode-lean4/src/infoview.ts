@@ -1,6 +1,7 @@
 import {
     EditorApi,
     InfoviewApi,
+    InfoviewConfig,
     LeanFileProgressParams,
     RpcConnected,
     RpcConnectParams,
@@ -12,16 +13,19 @@ import {
 import { join } from 'path'
 import {
     commands,
+    ConfigurationTarget,
     Diagnostic,
     Disposable,
     env,
     ExtensionContext,
+    Event,
     Position,
     Range,
     Selection,
     TextEditor,
     TextEditorRevealType,
     Uri,
+    ViewColumn,
     WebviewPanel,
     window,
     workspace,
@@ -34,8 +38,12 @@ import {
     getInfoViewAutoOpenShowsGoal,
     getInfoViewDebounceTime,
     getInfoViewEmphasizeFirstGoal,
+    getInfoViewExpectedTypeVisibility,
+    getInfoViewHideInaccessibleAssumptions,
+    getInfoViewHideInstanceAssumptions,
+    getInfoViewHideLetValues,
+    getInfoViewHideTypeAssumptions,
     getInfoViewReverseTacticState,
-    getInfoViewShowExpectedType,
     getInfoViewShowGoalNames,
     getInfoViewShowTooltipOnHover,
     getInfoViewStyle,
@@ -51,6 +59,7 @@ import { lean, LeanEditor } from './utils/leanEditorProvider'
 import { logger } from './utils/logger'
 import { displayNotification } from './utils/notifs'
 import { viewColumnOfActiveTextEditor, viewColumnOfInfoView } from './utils/viewColumn'
+import { IFrameInfoWebview, IFrameInfoWebviewFactory } from '../../../infowebview'
 
 const keepAlivePeriodMs = 10000
 
@@ -60,7 +69,7 @@ async function rpcConnect(client: LeanClient, uri: ls.DocumentUri): Promise<stri
     return result.sessionId
 }
 
-class RpcSessionAtPos implements Disposable {
+export class RpcSessionAtPos implements Disposable {
     keepAliveInterval?: NodeJS.Timeout
     client: LeanClient
 
@@ -89,7 +98,7 @@ class RpcSessionAtPos implements Disposable {
 
 export class InfoProvider implements Disposable {
     /** Instance of the panel, if it is open. Otherwise `undefined`. */
-    private webviewPanel?: WebviewPanel & { rpc: Rpc; api: InfoviewApi }
+    private webviewPanel?: IFrameInfoWebview
     private subscriptions: Disposable[] = []
     private clientSubscriptions: Disposable[] = []
 
@@ -138,6 +147,44 @@ export class InfoProvider implements Disposable {
     }
 
     private editorApi: EditorApi = {
+        saveConfig: async (config: InfoviewConfig) => {
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('allErrorsOnLine', config.allErrorsOnLine, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('autoOpenShowsGoal', config.autoOpenShowsGoal, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('debounceTime', config.debounceTime, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('expectedTypeVisibility', config.expectedTypeVisibility, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('showGoalNames', config.showGoalNames, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('emphasizeFirstGoal', config.emphasizeFirstGoal, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('reverseTacticState', config.reverseTacticState, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('hideTypeAssumptions', config.hideTypeAssumptions, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('hideInstanceAssumptions', config.hideInstanceAssumptions, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('hideInaccessibleAssumptions', config.hideInaccessibleAssumptions, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('hideLetValues', config.hideLetValues, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('showTooltipOnHover', config.showTooltipOnHover, ConfigurationTarget.Global)
+        },
         sendClientRequest: async (uri: string, method: string, params: any): Promise<any> => {
             const extUri = parseExtUri(uri)
             if (extUri === undefined) {
@@ -319,6 +366,7 @@ export class InfoProvider implements Disposable {
     constructor(
         private clientProvider: LeanClientProvider,
         private context: ExtensionContext,
+        private infoWebviewFactory: IFrameInfoWebviewFactory,
     ) {
         this.updateStylesheet()
 
@@ -374,6 +422,126 @@ export class InfoProvider implements Disposable {
             ),
             commands.registerCommand('lean4.infoview.unselectAll', args =>
                 this.webviewPanel?.api.clickedContextMenu({ entry: 'unselectAll', id: args.selectedLocationsId }),
+            ),
+            commands.registerCommand('lean4.infoview.pause', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'pause', id: args.pauseId }),
+            ),
+            commands.registerCommand('lean4.infoview.unpause', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'unpause', id: args.unpauseId }),
+            ),
+            commands.registerCommand('lean4.infoview.pin', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'pin', id: args.pinId }),
+            ),
+            commands.registerCommand('lean4.infoview.unpin', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'unpin', id: args.unpinId }),
+            ),
+            commands.registerCommand('lean4.infoview.refresh', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'refresh', id: args.refreshId }),
+            ),
+            commands.registerCommand('lean4.infoview.pauseAllMessages', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'pauseAllMessages',
+                    id: args.pauseAllMessagesId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.unpauseAllMessages', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'unpauseAllMessages',
+                    id: args.unpauseAllMessagesId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.goToPinnedLocation', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'goToPinnedLocation',
+                    id: args.goToPinnedLocationId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.goToMessageLocation', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'goToMessageLocation',
+                    id: args.goToMessageLocationId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.displayTargetBeforeAssumptions', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'displayTargetBeforeAssumptions',
+                    id: args.displayTargetBeforeAssumptionsId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.displayAssumptionsBeforeTarget', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'displayAssumptionsBeforeTarget',
+                    id: args.displayAssumptionsBeforeTargetId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.hideTypeAssumptions', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'hideTypeAssumptions',
+                    id: args.hideTypeAssumptionsId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.showTypeAssumptions', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'showTypeAssumptions',
+                    id: args.showTypeAssumptionsId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.hideInstanceAssumptions', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'hideInstanceAssumptions',
+                    id: args.hideInstanceAssumptionsId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.showInstanceAssumptions', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'showInstanceAssumptions',
+                    id: args.showInstanceAssumptionsId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.hideInaccessibleAssumptions', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'hideInaccessibleAssumptions',
+                    id: args.hideInaccessibleAssumptionsId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.showInaccessibleAssumptions', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'showInaccessibleAssumptions',
+                    id: args.showInaccessibleAssumptionsId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.hideLetValues', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'hideLetValues', id: args.hideLetValuesId }),
+            ),
+            commands.registerCommand('lean4.infoview.showLetValues', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'showLetValues', id: args.showLetValuesId }),
+            ),
+            commands.registerCommand('lean4.infoview.hideGoalNames', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'hideGoalNames',
+                    id: args.hideGoalNamesId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.showGoalNames', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'showGoalNames',
+                    id: args.showGoalNamesId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.emphasizeFirstGoal', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'emphasizeFirstGoal',
+                    id: args.emphasizeFirstGoalId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.deemphasizeFirstGoal', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'deemphasizeFirstGoal',
+                    id: args.deemphasizeFirstGoalId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.saveSettings', args =>
+                this.webviewPanel?.api.clickedContextMenu({ entry: 'saveSettings', id: args.saveSettingsId }),
             ),
         )
     }
@@ -590,9 +758,11 @@ export class InfoProvider implements Disposable {
         if (this.webviewPanel) {
             this.webviewPanel.reveal(undefined, true)
         } else {
-            const webviewPanel = window.createWebviewPanel(
+            const webviewPanel = this.infoWebviewFactory.make(this.editorApi, this.stylesheet)
+            /*
+            window.createWebviewPanel(
                 'lean4_infoview',
-                'Lean Infoview',
+                'Lean InfoView',
                 { viewColumn: viewColumnOfInfoView(), preserveFocus: true },
                 {
                     enableFindWidget: true,
@@ -625,13 +795,13 @@ export class InfoProvider implements Disposable {
                 }
             })
             webviewPanel.api = webviewPanel.rpc.getApi()
+            */
             webviewPanel.onDidDispose(() => {
                 this.webviewPanel = undefined
                 this.clearNotificationHandlers()
                 this.clearRpcSessions(null) // should be after `webviewPanel = undefined`
             })
             this.webviewPanel = webviewPanel
-            webviewPanel.webview.html = this.initialHtml()
 
             const client = this.clientProvider.findClient(leanEditor.documentExtUri)
             await this.initInfoView(leanEditor, client)
@@ -669,10 +839,14 @@ export class InfoProvider implements Disposable {
             allErrorsOnLine: getInfoViewAllErrorsOnLine(),
             autoOpenShowsGoal: getInfoViewAutoOpenShowsGoal(),
             debounceTime: getInfoViewDebounceTime(),
-            showExpectedType: getInfoViewShowExpectedType(),
+            expectedTypeVisibility: getInfoViewExpectedTypeVisibility(),
             showGoalNames: getInfoViewShowGoalNames(),
             emphasizeFirstGoal: getInfoViewEmphasizeFirstGoal(),
             reverseTacticState: getInfoViewReverseTacticState(),
+            hideTypeAssumptions: getInfoViewHideTypeAssumptions(),
+            hideInstanceAssumptions: getInfoViewHideInstanceAssumptions(),
+            hideInaccessibleAssumptions: getInfoViewHideInaccessibleAssumptions(),
+            hideLetValues: getInfoViewHideLetValues(),
             showTooltipOnHover: getInfoViewShowTooltipOnHover(),
         })
     }
@@ -830,7 +1004,7 @@ export class InfoProvider implements Disposable {
 
     private getLocalPath(path: string): string | undefined {
         if (this.webviewPanel) {
-            return this.webviewPanel.webview.asWebviewUri(Uri.file(join(this.context.extensionPath, path))).toString()
+            // return this.webviewPanel.webview.asWebviewUri(Uri.file(join(this.context.extensionPath, path))).toString()
         }
         return undefined
     }

@@ -4,44 +4,22 @@ import * as vscode from 'vscode'
 import { logger } from '../../../src/utils/logger'
 import {
     assertStringInInfoview,
+    assertStringInInfoviewAt,
     clickInfoViewButton,
     closeActiveEditor,
     closeAllEditors,
-    findWord,
     gotoDefinition,
     gotoPosition,
     initLean4Untitled,
     insertText,
+    insertTextAfter,
     waitForActiveEditor,
     waitForInfoviewHtml,
+    waitForInfoviewHtmlAt,
     waitForInfoviewNotHtml,
 } from '../utils/helpers'
 
 suite('InfoView Test Suite', () => {
-    test('Copy to Comment', async () => {
-        logger.log('=================== Copy to Comment ===================')
-
-        const a = 37
-        const b = 22
-        const expectedEval1 = (a * b).toString()
-
-        const features = await initLean4Untitled(`#eval ${a}*${b}`)
-        const info = features.infoProvider
-        assert(info, 'No InfoProvider export')
-
-        await assertStringInInfoview(info, expectedEval1)
-
-        logger.log('Clicking copyToComment button in InfoView')
-        await clickInfoViewButton(info, 'copy-to-comment')
-
-        logger.log(`Checking editor contains ${expectedEval1}`)
-        const editor = vscode.window.activeTextEditor
-        assert(editor !== undefined, 'no active editor')
-        await findWord(editor, expectedEval1)
-
-        await closeAllEditors()
-    }).timeout(60000)
-
     test('Pinning and unpinning', async () => {
         logger.log('=================== Pinning and unpinning ===================')
 
@@ -50,7 +28,8 @@ suite('InfoView Test Suite', () => {
         const c = 77
         const d = 7
 
-        const features = await initLean4Untitled(`#eval ${a}*${b}`)
+        const evalLine1 = `#eval ${a}*${b}`
+        const features = await initLean4Untitled(evalLine1)
         const info = features.infoProvider
         assert(info, 'No InfoProvider export')
 
@@ -61,11 +40,12 @@ suite('InfoView Test Suite', () => {
         await clickInfoViewButton(info, 'toggle-pinned')
 
         logger.log('Insert another couple lines and another eval')
-        await insertText(`\n\n/- add another unpinned eval -/\n#eval ${c}*${d}`)
+        const evalLine2 = `#eval ${c}*${d}`
+        await insertTextAfter(evalLine1, `\n\n/- add another unpinned eval -/\n${evalLine2}`)
 
         logger.log('wait for the new expression to appear')
         const expectedEval2 = (c * d).toString()
-        await assertStringInInfoview(info, expectedEval2)
+        await assertStringInInfoviewAt(evalLine2, info, expectedEval2)
 
         logger.log('make sure pinned expression is still there')
         await assertStringInInfoview(info, expectedEval1)
@@ -75,7 +55,7 @@ suite('InfoView Test Suite', () => {
 
         logger.log('Make sure pinned eval is gone, but unpinned eval remains')
         await waitForInfoviewNotHtml(info, expectedEval1)
-        await assertStringInInfoview(info, expectedEval2)
+        await assertStringInInfoviewAt(evalLine2, info, expectedEval2)
 
         await closeAllEditors()
     }).timeout(60000)
@@ -92,7 +72,7 @@ suite('InfoView Test Suite', () => {
 
         const info = features.infoProvider
         assert(info, 'No InfoProvider export')
-        await waitForInfoviewHtml(info, expectedEval, 30, 1000, false)
+        await waitForInfoviewHtmlAt('#eval', info, expectedEval, 30, 1000, false)
 
         logger.log('Pin this info')
         await clickInfoViewButton(info, 'toggle-pinned')
@@ -106,7 +86,7 @@ suite('InfoView Test Suite', () => {
 
         logger.log('wait for the new expression to appear')
         const expectedEval2 = '[4, 1, 2, 3]'
-        await waitForInfoviewHtml(info, expectedEval2, 30, 1000, false)
+        await waitForInfoviewHtmlAt('#eval', info, expectedEval2, 30, 1000, false)
 
         logger.log('make sure pinned expression is not showing an error')
         await waitForInfoviewNotHtml(info, 'Incorrect position')
@@ -116,7 +96,7 @@ suite('InfoView Test Suite', () => {
         editor.selection = new vscode.Selection(newLastLine.start, newLastLine.start)
 
         logger.log('make sure pinned value reverts after an undo')
-        await waitForInfoviewHtml(info, expectedEval, 30, 1000, false)
+        await waitForInfoviewHtmlAt('#eval', info, expectedEval, 30, 1000, false)
 
         await closeAllEditors()
     }).timeout(60000)
@@ -128,21 +108,22 @@ suite('InfoView Test Suite', () => {
         const b = 95
         const prefix = 'Lean version is:'
 
-        const features = await initLean4Untitled(`#eval ${a}*${b}`)
+        const evalLine = `#eval ${a}*${b}`
+        const features = await initLean4Untitled(evalLine)
         const info = features.infoProvider
         assert(info, 'No InfoProvider export')
 
         const expectedEval = (a * b).toString()
-        await assertStringInInfoview(info, expectedEval)
+        await assertStringInInfoviewAt('#eval', info, expectedEval)
 
         logger.log('Pin this info')
         await clickInfoViewButton(info, 'toggle-pinned')
 
         logger.log('Insert another eval')
-        await insertText('\n\n#eval s!"' + prefix + ': {Lean.versionString}"')
+        await insertTextAfter(evalLine, '\n\n#eval s!"' + prefix + ': {Lean.versionString}"')
 
         logger.log('make sure output of versionString is also there')
-        await assertStringInInfoview(info, prefix)
+        await assertStringInInfoviewAt('#eval s!', info, prefix)
 
         logger.log('make sure pinned expression is not showing an error')
         await waitForInfoviewNotHtml(info, 'Incorrect position')
@@ -177,7 +158,7 @@ suite('InfoView Test Suite', () => {
         const info = features.infoProvider
         assert(info, 'No InfoProvider export')
 
-        gotoPosition(0, text.indexOf('by'))
+        gotoPosition('by')
         await assertStringInInfoview(info, 'issue461')
 
         logger.log('Opening tooltip for goal type')

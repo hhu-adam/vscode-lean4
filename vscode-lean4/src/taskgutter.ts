@@ -13,6 +13,7 @@ import {
 } from 'vscode'
 import { DiagnosticSeverity, Range as LspRange } from 'vscode-languageclient'
 import {
+    decorationEditDelay,
     goalsAccomplishedDecorationKind,
     showDiagnosticGutterDecorations,
     showUnsolvedGoalsDecoration,
@@ -34,9 +35,10 @@ interface DecorationState {
 }
 
 class LeanFileTaskGutter implements Disposable {
-    private readonly editDelayMs: number = 3000
+    private readonly editDelayMs: number = decorationEditDelay()
     private timeout: NodeJS.Timeout | undefined
     private editDelayTimeout: NodeJS.Timeout | undefined
+    private lastEditTimestampMs: number | undefined
     private subscriptions: Disposable[] = []
     private decorationStates: DecorationState[] = []
 
@@ -51,10 +53,7 @@ class LeanFileTaskGutter implements Disposable {
 
     private onDidChange() {
         clearTimeout(this.editDelayTimeout)
-        this.editDelayTimeout = setTimeout(() => {
-            this.editDelayTimeout = undefined
-            this.displayDecorations('EditDelayed')
-        }, this.editDelayMs)
+        this.lastEditTimestampMs = Date.now()
     }
 
     onDidReveal() {
@@ -62,7 +61,7 @@ class LeanFileTaskGutter implements Disposable {
     }
 
     onDidUpdateState(newDecorationStates: DecorationState[]) {
-        this.scheduleUpdate(newDecorationStates, 20)
+        this.scheduleUpdate(newDecorationStates, 100)
     }
 
     clear(clearedDecorationTypes: TextEditorDecorationType[]) {
@@ -85,9 +84,15 @@ class LeanFileTaskGutter implements Disposable {
                 this.displayDecorations('Instantaneous')
             }, ms)
         }
-        if (this.editDelayTimeout === undefined) {
+        clearTimeout(this.editDelayTimeout)
+        const remainingDelayMs =
+            this.lastEditTimestampMs !== undefined
+                ? Math.max(ms, this.editDelayMs - (Date.now() - this.lastEditTimestampMs))
+                : ms
+        this.editDelayTimeout = setTimeout(() => {
+            this.editDelayTimeout = undefined
             this.displayDecorations('EditDelayed')
-        }
+        }, remainingDelayMs)
     }
 
     private updateDecorationStates(newDecorationStates: DecorationState[]) {
@@ -207,19 +212,7 @@ function mergeDiagnosticGutterDecos(a: DiagnosticGutterDeco, b: DiagnosticGutter
 }
 
 function isGoalsAccomplishedDiagnostic(d: LeanDiagnostic): boolean {
-    return (
-        d.leanTags !== undefined &&
-        d.leanTags.some(t => t === LeanTag.GoalsAccomplished) &&
-        goalsAccomplishedDecorationKind() !== 'Off'
-    )
-}
-
-function isGutterDecoDiagnostic(d: LeanDiagnostic): boolean {
-    return (
-        d.severity === DiagnosticSeverity.Error ||
-        d.severity === DiagnosticSeverity.Warning ||
-        isGoalsAccomplishedDiagnostic(d)
-    )
+    return d.leanTags !== undefined && d.leanTags.some(t => t === LeanTag.GoalsAccomplished)
 }
 
 function determineDiagStart(d: LeanDiagnostic, startLine: number, endLine: number, line: number): DiagStart {
@@ -269,29 +262,14 @@ function determineDiagnosticGutterDeco(
     }
 }
 
-function computeDiagnosticGutterDecos(diagnostics: LeanDiagnostic[]): DiagnosticGutterDeco[] {
-    const decos: Map<number, DiagnosticGutterDeco> = new Map()
-    for (const d of diagnostics) {
-        if (!isGutterDecoDiagnostic(d)) {
-            continue
-        }
-        const range = diagRange(d)
-        const startLine = range.start.line
-        const endLine = inclusiveEndLine(range)
-        for (let line = startLine; line <= endLine; line++) {
-            const deco = determineDiagnosticGutterDeco(d, startLine, endLine, line)
-            const oldDeco = decos.get(deco.line)
-            if (oldDeco === undefined) {
-                decos.set(deco.line, deco)
-            } else {
-                const mergedDeco = mergeDiagnosticGutterDecos(oldDeco, deco)
-                decos.set(deco.line, mergedDeco)
-            }
-        }
+function updateDecos(decos: Map<number, DiagnosticGutterDeco>, deco: DiagnosticGutterDeco) {
+    const oldDeco = decos.get(deco.line)
+    if (oldDeco === undefined) {
+        decos.set(deco.line, deco)
+    } else {
+        const mergedDeco = mergeDiagnosticGutterDecos(oldDeco, deco)
+        decos.set(deco.line, mergedDeco)
     }
-    const result: DiagnosticGutterDeco[] = [...decos.values()]
-    result.sort((a, b) => a.line - b.line)
-    return result
 }
 
 const diagnosticGutterDecoKinds = [
@@ -326,103 +304,6 @@ const diagnosticGutterDecoKinds = [
 ] as const
 type DiagnosticGutterDecoKind = (typeof diagnosticGutterDecoKinds)[number]
 
-function getGoalsAccomplishedDiagnosticGutterDecoKindName(): string {
-    const configName = goalsAccomplishedDecorationKind()
-    if (configName === 'Double Checkmark') {
-        return 'goals-accomplished-checkmark'
-    }
-    if (configName === 'Circled Checkmark') {
-        return 'goals-accomplished-circled-checkmark'
-    }
-    if (configName === 'Octopus') {
-        return 'goals-accomplished-octopus'
-    }
-    if (configName === 'Tada') {
-        return 'goals-accomplished-tada'
-    }
-    return 'goals-accomplished-checkmark'
-}
-
-function determineSingleLineDiagnosticGutterDecoKind(d: DiagnosticGutterDeco, name: string): DiagnosticGutterDecoKind {
-    const c = d.isPreviousDiagContinue
-    const e = d.isPreviousDiagEnd
-    if (!c && !e) {
-        return name as DiagnosticGutterDecoKind
-    }
-    if (!c && e) {
-        return `${name}-l-passthrough` as DiagnosticGutterDecoKind
-    }
-    if (c && !e) {
-        return `${name}-i-passthrough` as DiagnosticGutterDecoKind
-    }
-    if (c && e) {
-        return `${name}-t-passthrough` as DiagnosticGutterDecoKind
-    }
-    assert(false)
-}
-
-function determineDiagnosticGutterDecoKind(d: DiagnosticGutterDeco): DiagnosticGutterDecoKind | undefined {
-    const s = d.diagStart
-    const c = d.isPreviousDiagContinue
-    const e = d.isPreviousDiagEnd
-    if (s !== 'None') {
-        const k = s.kind
-        const r = s.range
-        if (k === 'Error') {
-            if (!c && !e) {
-                if (r === 'SingleLine') {
-                    return 'error'
-                }
-                if (r === 'MultiLine') {
-                    return 'error-init'
-                }
-                r satisfies never
-            }
-            if (!c && e) {
-                if (r === 'SingleLine') {
-                    return 'error-l-passthrough'
-                }
-                if (r === 'MultiLine') {
-                    return 'error-t-passthrough'
-                }
-                r satisfies never
-            }
-            if (c && !e) {
-                // All designs I can think of that would distinguish `SingleLine` and `MultiLine` in this case
-                // have too much visual complexity for the small gutter.
-                return 'error-i-passthrough'
-            }
-            if (c && e) {
-                // All designs I can think of that would distinguish `SingleLine` and `MultiLine` in this case
-                // have too much visual complexity for the small gutter.
-                return 'error-t-passthrough'
-            }
-            assert(false)
-        }
-        if (k === 'Warning') {
-            return determineSingleLineDiagnosticGutterDecoKind(d, 'warning')
-        }
-        if (k === 'GoalsAccomplished') {
-            return determineSingleLineDiagnosticGutterDecoKind(d, getGoalsAccomplishedDiagnosticGutterDecoKindName())
-        }
-        k satisfies never
-    }
-    assert(s === 'None')
-    if (!c && !e) {
-        return undefined
-    }
-    if (!c && e) {
-        return 'error-l'
-    }
-    if (c && !e) {
-        return 'error-i'
-    }
-    if (c && e) {
-        return 'error-t'
-    }
-    assert(false)
-}
-
 export class LeanTaskGutter implements Disposable {
     private processingDecorationType: TextEditorDecorationType
     private fatalErrorDecorationType: TextEditorDecorationType
@@ -432,6 +313,7 @@ export class LeanTaskGutter implements Disposable {
     private gutters: Map<string, LeanFileTaskGutter> = new Map()
     private subscriptions: Disposable[] = []
     private showDiagnosticGutterDecorations: boolean = true
+    private goalsAccomplishedDecorationKind: string
     private showUnsolvedGoalsDecoration: boolean = true
 
     constructor(
@@ -467,14 +349,14 @@ export class LeanTaskGutter implements Disposable {
                 after: {
                     contentText: '🛠',
                     color: unsolvedGoalsDecorationDarkThemeColor(),
-                    margin: '0 0 0 1em',
+                    margin: '0 0 0 1ch',
                 },
             },
             light: {
                 after: {
                     contentText: '🛠',
                     color: unsolvedGoalsDecorationLightThemeColor(),
-                    margin: '0 0 0 1em',
+                    margin: '0 0 0 1ch',
                 },
             },
             isWholeLine: true,
@@ -535,6 +417,7 @@ export class LeanTaskGutter implements Disposable {
             errorLensExtensions.isActive &&
             workspace.getConfiguration('errorLens').get('gutterIconsEnabled', false)
         this.showDiagnosticGutterDecorations = !isErrorLensGutterEnabled && showDiagnosticGutterDecorations()
+        this.goalsAccomplishedDecorationKind = goalsAccomplishedDecorationKind()
         this.showUnsolvedGoalsDecoration = showUnsolvedGoalsDecoration()
         if (!this.showDiagnosticGutterDecorations) {
             for (const gutter of this.gutters.values()) {
@@ -615,9 +498,9 @@ export class LeanTaskGutter implements Disposable {
                 decos: [],
             })
         }
-        const decos = computeDiagnosticGutterDecos(diagnostics)
+        const decos = this.computeDiagnosticGutterDecos(diagnostics)
         for (const deco of decos) {
-            const kind = determineDiagnosticGutterDecoKind(deco)
+            const kind = this.determineDiagnosticGutterDecoKind(deco)
             if (kind === undefined) {
                 continue
             }
@@ -626,6 +509,138 @@ export class LeanTaskGutter implements Disposable {
             })
         }
         return [...decoStates.values()]
+    }
+
+    computeDiagnosticGutterDecos(diagnostics: LeanDiagnostic[]): DiagnosticGutterDeco[] {
+        const decos: Map<number, DiagnosticGutterDeco> = new Map()
+        for (const d of diagnostics) {
+            if (!this.isGutterDecoDiagnostic(d)) {
+                continue
+            }
+            const range = diagRange(d)
+            const startLine = range.start.line
+            const endLine = inclusiveEndLine(range)
+            const startDeco = determineDiagnosticGutterDeco(d, startLine, endLine, startLine)
+            updateDecos(decos, startDeco)
+            if (startDeco.diagStart !== 'None' && startDeco.diagStart.range === 'SingleLine') {
+                continue
+            }
+            for (let line = startLine + 1; line <= endLine; line++) {
+                const deco = determineDiagnosticGutterDeco(d, startLine, endLine, line)
+                updateDecos(decos, deco)
+            }
+        }
+        const result: DiagnosticGutterDeco[] = [...decos.values()]
+        result.sort((a, b) => a.line - b.line)
+        return result
+    }
+
+    isGutterDecoDiagnostic(d: LeanDiagnostic): boolean {
+        return (
+            d.severity === DiagnosticSeverity.Error ||
+            d.severity === DiagnosticSeverity.Warning ||
+            (isGoalsAccomplishedDiagnostic(d) && this.goalsAccomplishedDecorationKind !== 'Off')
+        )
+    }
+
+    getGoalsAccomplishedDiagnosticGutterDecoKindName(): string {
+        const configName = this.goalsAccomplishedDecorationKind
+        if (configName === 'Double Checkmark') {
+            return 'goals-accomplished-checkmark'
+        }
+        if (configName === 'Circled Checkmark') {
+            return 'goals-accomplished-circled-checkmark'
+        }
+        if (configName === 'Octopus') {
+            return 'goals-accomplished-octopus'
+        }
+        if (configName === 'Tada') {
+            return 'goals-accomplished-tada'
+        }
+        return 'goals-accomplished-checkmark'
+    }
+
+    determineSingleLineDiagnosticGutterDecoKind(d: DiagnosticGutterDeco, name: string): DiagnosticGutterDecoKind {
+        const c = d.isPreviousDiagContinue
+        const e = d.isPreviousDiagEnd
+        if (!c && !e) {
+            return name as DiagnosticGutterDecoKind
+        }
+        if (!c && e) {
+            return `${name}-l-passthrough` as DiagnosticGutterDecoKind
+        }
+        if (c && !e) {
+            return `${name}-i-passthrough` as DiagnosticGutterDecoKind
+        }
+        if (c && e) {
+            return `${name}-t-passthrough` as DiagnosticGutterDecoKind
+        }
+        assert(false)
+    }
+
+    determineDiagnosticGutterDecoKind(d: DiagnosticGutterDeco): DiagnosticGutterDecoKind | undefined {
+        const s = d.diagStart
+        const c = d.isPreviousDiagContinue
+        const e = d.isPreviousDiagEnd
+        if (s !== 'None') {
+            const k = s.kind
+            const r = s.range
+            if (k === 'Error') {
+                if (!c && !e) {
+                    if (r === 'SingleLine') {
+                        return 'error'
+                    }
+                    if (r === 'MultiLine') {
+                        return 'error-init'
+                    }
+                    r satisfies never
+                }
+                if (!c && e) {
+                    if (r === 'SingleLine') {
+                        return 'error-l-passthrough'
+                    }
+                    if (r === 'MultiLine') {
+                        return 'error-t-passthrough'
+                    }
+                    r satisfies never
+                }
+                if (c && !e) {
+                    // All designs I can think of that would distinguish `SingleLine` and `MultiLine` in this case
+                    // have too much visual complexity for the small gutter.
+                    return 'error-i-passthrough'
+                }
+                if (c && e) {
+                    // All designs I can think of that would distinguish `SingleLine` and `MultiLine` in this case
+                    // have too much visual complexity for the small gutter.
+                    return 'error-t-passthrough'
+                }
+                assert(false)
+            }
+            if (k === 'Warning') {
+                return this.determineSingleLineDiagnosticGutterDecoKind(d, 'warning')
+            }
+            if (k === 'GoalsAccomplished') {
+                return this.determineSingleLineDiagnosticGutterDecoKind(
+                    d,
+                    this.getGoalsAccomplishedDiagnosticGutterDecoKindName(),
+                )
+            }
+            k satisfies never
+        }
+        assert(s === 'None')
+        if (!c && !e) {
+            return undefined
+        }
+        if (!c && e) {
+            return 'error-l'
+        }
+        if (c && !e) {
+            return 'error-i'
+        }
+        if (c && e) {
+            return 'error-t'
+        }
+        assert(false)
     }
 
     private computeUnsolvedGoalsDecoState(diagnostics: LeanDiagnostic[]): DecorationState {

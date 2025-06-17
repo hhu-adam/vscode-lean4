@@ -1,9 +1,13 @@
-import { ConfigurationTarget, workspace } from 'vscode'
+import { ConfigurationTarget, ThemeColor, workspace } from 'vscode'
 import { elanStableChannel } from './utils/elan'
 import { PATH } from './utils/envPath'
 
-// TODO: does currently not contain config options for `./abbreviation`
-// so that it is easy to keep it in sync with vscode-lean.
+function processConfigColor(c: string): ThemeColor | string {
+    if (c.match(/^(#|rgb\(|rgba\(|hsl\(|hsla\()/)) {
+        return c
+    }
+    return new ThemeColor(c)
+}
 
 export function getPowerShellPath(): string {
     const windir = process.env.windir
@@ -77,8 +81,17 @@ export function getInfoViewDebounceTime(): number {
     return workspace.getConfiguration('lean4.infoview').get('debounceTime', 50)
 }
 
-export function getInfoViewShowExpectedType(): boolean {
+function getInfoViewShowExpectedType(): boolean {
     return workspace.getConfiguration('lean4.infoview').get('showExpectedType', true)
+}
+
+export function getInfoViewExpectedTypeVisibility(): 'Expanded by default' | 'Collapsed by default' | 'Hidden' {
+    const show = getInfoViewShowExpectedType()
+    const visibility = workspace.getConfiguration('lean4.infoview').get('expectedTypeVisibility', 'Expanded by default')
+    if (!show && visibility === 'Expanded by default') {
+        return 'Collapsed by default'
+    }
+    return visibility
 }
 
 export function getInfoViewShowGoalNames(): boolean {
@@ -91,6 +104,22 @@ export function getInfoViewEmphasizeFirstGoal(): boolean {
 
 export function getInfoViewReverseTacticState(): boolean {
     return workspace.getConfiguration('lean4.infoview').get('reverseTacticState', false)
+}
+
+export function getInfoViewHideTypeAssumptions(): boolean {
+    return workspace.getConfiguration('lean4.infoview').get('hideTypeAssumptions', false)
+}
+
+export function getInfoViewHideInstanceAssumptions(): boolean {
+    return workspace.getConfiguration('lean4.infoview').get('hideInstanceAssumptions', false)
+}
+
+export function getInfoViewHideInaccessibleAssumptions(): boolean {
+    return workspace.getConfiguration('lean4.infoview').get('hideInaccessibleAssumptions', false)
+}
+
+export function getInfoViewHideLetValues(): boolean {
+    return workspace.getConfiguration('lean4.infoview').get('hideLetValues', false)
 }
 
 export function getInfoViewShowTooltipOnHover(): boolean {
@@ -117,16 +146,24 @@ export function showUnsolvedGoalsDecoration(): boolean {
     return workspace.getConfiguration('lean4').get('showUnsolvedGoalsDecoration', true)
 }
 
-export function unsolvedGoalsDecorationLightThemeColor(): string {
-    return workspace.getConfiguration('lean4').get('unsolvedGoalsDecorationLightThemeColor', '#1A85FF88')
+export function unsolvedGoalsDecorationLightThemeColor(): ThemeColor | string {
+    return processConfigColor(
+        workspace.getConfiguration('lean4').get('unsolvedGoalsDecorationLightThemeColor', 'editorInfo.foreground'),
+    )
 }
 
-export function unsolvedGoalsDecorationDarkThemeColor(): string {
-    return workspace.getConfiguration('lean4').get('unsolvedGoalsDecorationDarkThemeColor', '#3794FF88')
+export function unsolvedGoalsDecorationDarkThemeColor(): ThemeColor | string {
+    return processConfigColor(
+        workspace.getConfiguration('lean4').get('unsolvedGoalsDecorationDarkThemeColor', 'editorInfo.foreground'),
+    )
 }
 
 export function goalsAccomplishedDecorationKind(): string {
     return workspace.getConfiguration('lean4').get('goalsAccomplishedDecorationKind', 'Double Checkmark')
+}
+
+export function decorationEditDelay(): number {
+    return workspace.getConfiguration('lean4').get('decorationEditDelay', 750)
 }
 
 export function isRunningTest(): boolean {

@@ -13,16 +13,17 @@ import {
     WorkspaceFolder,
 } from 'vscode'
 import {
+    BaseLanguageClient,
     ClientCapabilities,
     DiagnosticSeverity,
     DidChangeTextDocumentParams,
     DidCloseTextDocumentParams,
     DocumentFilter,
+    Executable,
     InitializeResult,
     LanguageClient,
     LanguageClientOptions,
     RevealOutputChannelOn,
-    ServerOptions,
     State,
     StaticFeature,
 } from 'vscode-languageclient/node'
@@ -43,8 +44,8 @@ import {
 } from './config'
 import { logger } from './utils/logger'
 // @ts-ignore
-import path from 'path'
 import { SemVer } from 'semver'
+import { formatCommandExecutionOutput } from './utils/batch'
 import {
     c2pConverter,
     LeanPublishDiagnosticsParams,
@@ -62,6 +63,7 @@ import {
     displayNotificationWithOutput,
 } from './utils/notifs'
 import { willUseLakeServer } from './utils/projectInfo'
+import { LanguageClientWrapper } from 'monaco-editor-wrapper'
 
 interface LeanClientCapabilties {
     silentDiagnosticSupport?: boolean | undefined
@@ -77,7 +79,7 @@ export type ServerProgress = Map<ExtUri, LeanFileProgressProcessingInfo[]>
 
 export class LeanClient implements Disposable {
     running: boolean
-    private client: LanguageClient | undefined
+    private client: BaseLanguageClient | undefined
     private outputChannel: OutputChannel
     folderUri: ExtUri
     private subscriptions: Disposable[] = []
@@ -125,8 +127,9 @@ export class LeanClient implements Disposable {
     private serverFailedEmitter = new EventEmitter<string>()
     serverFailed = this.serverFailedEmitter.event
 
-    constructor(folderUri: ExtUri, outputChannel: OutputChannel) {
-        this.outputChannel = outputChannel
+    constructor(folderUri: ExtUri, outputChannel: OutputChannel,
+        private setupLanguageClient: (clientOptions: LanguageClientOptions) => Promise<BaseLanguageClient>
+    ) {        this.outputChannel = outputChannel
         this.folderUri = folderUri
         this.subscriptions.push(new Disposable(() => this.staleDepNotifier?.dispose()))
     }
@@ -215,7 +218,7 @@ export class LeanClient implements Disposable {
 
             const progressOptions: ProgressOptions = {
                 location: ProgressLocation.Notification,
-                title: '[Server Startup] Starting Lean language client',
+                title: '[Server Startup] Starting Lean language server and cloning missing packages [(Click for details)](command:lean4.troubleshooting.showOutput)',
                 cancellable: false,
             }
             await window.withProgress(
@@ -230,6 +233,7 @@ export class LeanClient implements Disposable {
     private async determineToolchainOverride(
         defaultToolchain: string | undefined,
     ): Promise<{ kind: 'Override'; toolchain: string } | { kind: 'NoOverride' } | { kind: 'Error'; message: string }> {
+        /*
         const cwdUri = this.folderUri.scheme === 'file' ? this.folderUri : undefined
         const toolchainDecision = await leanRunner.decideToolchain({
             channel: this.outputChannel,
@@ -253,6 +257,7 @@ export class LeanClient implements Disposable {
             // which is not what we want.  For adhoc files we want the (default) toolchain instead.
             return { kind: 'Override', toolchain: defaultToolchain }
         }
+        */
         return { kind: 'NoOverride' }
     }
 
@@ -272,7 +277,7 @@ export class LeanClient implements Disposable {
         const toolchainOverride: string | undefined =
             toolchainOverrideResult.kind === 'Override' ? toolchainOverrideResult.toolchain : undefined
 
-        this.client = await this.setupClient(toolchainOverride)
+        this.client = await this.setupLanguageClient(this.obtainClientOptions())
 
         let insideRestart = true
         try {
@@ -368,7 +373,7 @@ export class LeanClient implements Disposable {
             return
         }
 
-        const fileName = fileUri.scheme === 'file' ? path.basename(fileUri.fsPath) : 'untitled'
+        const fileName = fileUri.scheme === 'file' ? fileUri.baseName() : 'untitled'
         const isImportsOutdatedError = params.diagnostics.some(
             d =>
                 d.severity === DiagnosticSeverity.Error &&
@@ -427,7 +432,9 @@ export class LeanClient implements Disposable {
             return true
         }
         if (this.folderUri.scheme === 'file' && uri.scheme === 'file') {
-            return uri.isInFolder(this.folderUri)
+            // lean4monaco: To avoid file system issues, we let any client manage any file:
+            return true
+            // return uri.isInFolder(this.folderUri)
         }
         return false
     }
@@ -471,14 +478,32 @@ export class LeanClient implements Disposable {
     }
 
     async restartFile(leanDoc: LeanDocument): Promise<void> {
-        if (this.client === undefined || !this.running) return // there was a problem starting lean server.
-
-        if (!this.isInFolderManagedByThisClient(leanDoc.extUri)) {
+        const extUri = leanDoc.extUri
+        const formattedFileName = extUri.scheme === 'file' ? extUri.baseName() : extUri.toString()
+        const formattedProjectName =
+            this.folderUri.scheme === 'file' ? this.folderUri.fsPath : this.folderUri.toString()
+        if (this.client === undefined || !this.running) {
+            displayNotification(
+                'Error',
+                `Cannot restart '${formattedFileName}': The language server for the project at '${formattedProjectName}' is stopped.`,
+            )
             return
         }
 
-        const uri = leanDoc.extUri.toString()
+        if (!this.isInFolderManagedByThisClient(extUri)) {
+            displayNotification(
+                'Error',
+                `Cannot restart '${formattedFileName}': The project at '${formattedProjectName}' does not contain the file.`,
+            )
+            return
+        }
+
+        const uri = extUri.toString()
         if (!this.openServerDocuments.delete(uri)) {
+            displayNotification(
+                'Error',
+                `Cannot restart '${formattedFileName}': The file has never been opened in the language server for the project at '${formattedProjectName}'.`,
+            )
             return
         }
         logger.log(`[LeanClient] Restarting File: ${uri}`)
@@ -488,6 +513,10 @@ export class LeanClient implements Disposable {
         )
 
         if (this.openServerDocuments.has(uri)) {
+            displayNotification(
+                'Error',
+                `Cannot restart '${formattedFileName}': The file has already been opened in the language server for the project at '${formattedProjectName}' since initiating the restart.`,
+            )
             return
         }
         this.openServerDocuments.add(uri)
@@ -521,7 +550,7 @@ export class LeanClient implements Disposable {
         return this.running ? this.client?.initializeResult : undefined
     }
 
-    private async determineServerOptions(toolchainOverride: string | undefined): Promise<ServerOptions> {
+    private async determineServerOptions(toolchainOverride: string | undefined): Promise<Executable> {
         const env = Object.assign({}, process.env)
         if (serverLoggingEnabled()) {
             env.LEAN_SERVER_LOG_DIR = serverLoggingPath()
@@ -570,7 +599,7 @@ export class LeanClient implements Disposable {
             documentSelector.pattern = `${escapedPath}/**/*`
             workspaceFolder = {
                 uri: this.folderUri.asUri(),
-                name: path.basename(this.folderUri.fsPath),
+                name: this.folderUri.baseName(),
                 index: 0, // the language client library does not actually need this index
             }
         }
@@ -690,9 +719,12 @@ export class LeanClient implements Disposable {
     }
 
     private async setupClient(toolchainOverride: string | undefined): Promise<LanguageClient> {
-        const serverOptions: ServerOptions = await this.determineServerOptions(toolchainOverride)
+        const serverOptions: Executable = await this.determineServerOptions(toolchainOverride)
         const clientOptions: LanguageClientOptions = this.obtainClientOptions()
 
+        this.outputChannel.appendLine(
+            formatCommandExecutionOutput(serverOptions.options?.cwd, serverOptions.command, serverOptions.args ?? []),
+        )
         const client = new LanguageClient('lean4', 'Lean 4', serverOptions, clientOptions)
         const leanCapabilityFeature: StaticFeature = {
             initialize(_1, _2) {},
@@ -702,7 +734,7 @@ export class LeanClient implements Disposable {
             fillClientCapabilities(capabilities: ClientCapabilities & { lean?: LeanClientCapabilties | undefined }) {
                 capabilities.lean = leanClientCapabilities
             },
-            dispose() {},
+            clear() {},
         }
         client.registerFeature(leanCapabilityFeature)
 

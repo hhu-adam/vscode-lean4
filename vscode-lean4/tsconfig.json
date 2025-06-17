@@ -8,7 +8,7 @@
         "lib": ["es6", "ES2021", "es2020.string"],
         "sourceMap": true,
         "alwaysStrict": true,
-        "rootDir": "./",
+        "rootDir": "../..",
         "noImplicitAny": true,
         "noFallthroughCasesInSwitch": true,
         "strictNullChecks": true,

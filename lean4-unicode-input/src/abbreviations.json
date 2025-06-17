@@ -579,7 +579,6 @@
     "pitchfork": "⋔",
     "psi": "ψ",
     "phi": "φ",
-    "8<": "✂",
     "leqn": "≰",
     "leqq": "≦",
     "leqslant": "≤",
@@ -710,6 +709,7 @@
     ">~": "≳",
     ">>": "⟫",
     "root": "√",
+    "scissor": "✂",
     "ssubn": "⊄",
     "ssub": "⊂",
     "ssupn": "⊅",
@@ -1819,6 +1819,7 @@
     "X": "⨯",
     "vectorproduct": "⨯",
     "crossproduct": "⨯",
+    "xs": "×ˢ",
     "coprod": "⨿",
     "sigmaobj": "∐",
     "xf": "×ᶠ",
@@ -1829,5 +1830,7 @@
     "goal": "⊢",
     "Vdash": "⊩",
     "Vert": "‖",
-    "Vvdash": "⊪"
+    "Vvdash": "⊪",
+    "tiny": "⧾",
+    "miny": "⧿"
 }
