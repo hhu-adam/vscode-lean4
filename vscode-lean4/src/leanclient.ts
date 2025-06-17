@@ -432,6 +432,8 @@ export class LeanClient implements Disposable {
             return true
         }
         if (this.folderUri.scheme === 'file' && uri.scheme === 'file') {
+            // lean4monaco: To avoid file system issues, we let any client manage any file:
+            return true
             return uri.isInFolder(this.folderUri)
         }
         return false

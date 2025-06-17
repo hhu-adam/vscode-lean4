@@ -230,8 +230,6 @@ export class LeanClientProvider implements Disposable {
                 bestCandidate = candidate
             }
         }
-        // lean4monaco: Due to issues with Windows file paths, we assume for now that there is only one client.
-        return this.getClients()[0]
         return bestCandidate
     }
 
