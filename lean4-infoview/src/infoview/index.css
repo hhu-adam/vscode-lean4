@@ -8,6 +8,7 @@ body {
 .font-code {
     color: var(--vscode-editor-foreground);
     font-family: var(--vscode-editor-font-family);
+    font-feature-settings: var(--vscode-editor-font-feature-settings);
     font-weight: var(--vscode-editor-font-weight);
     font-size: var(--vscode-editor-font-size);
     line-height: var(--vscode-editor-line-height);
@@ -27,6 +28,13 @@ body {
 .codicon-blank {
     width: 20px;
     height: 16px;
+}
+
+.font-codicon {
+    font-weight: var(--vscode-editor-font-weight) !important;
+    font-size: var(--vscode-editor-font-size) !important;
+    line-height: var(--vscode-editor-line-height) !important;
+    vertical-align: middle;
 }
 
 /* These are syntax highlights for the string goal view. */
@@ -174,7 +182,7 @@ select {
     line-height: var(--vscode-editor-line-height);
 }
 
-.tooltip-code-content a:hover {
+*[data-has-tooltip-on-hover] {
     cursor: pointer;
 }
 
@@ -207,6 +215,11 @@ select {
 .tooltip-code-content .code:last-child,
 .tooltip-code-content ul:last-child {
     margin-bottom: 0;
+}
+
+.trace-search {
+    width: 100%;
+    margin-bottom: 1em;
 }
 
 /* MarkupContent Layout */
@@ -249,6 +262,10 @@ select {
     border-radius: 2pt;
 }
 
+.highlighted-text {
+    background-color: var(--vscode-editor-findMatchBackground);
+}
+
 .b--inserted {
     border-color: var(--vscode-diffEditor-insertedTextBackground) !important;
 }
@@ -263,4 +280,8 @@ select {
 
 .b--transparent {
     border-color: transparent;
+}
+
+.non-selectable {
+    user-select: none;
 }

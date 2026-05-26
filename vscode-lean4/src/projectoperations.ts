@@ -1,13 +1,13 @@
 import * as fs from 'fs'
 import { join } from 'path'
-import { commands, Disposable, OutputChannel, QuickPickItem, window } from 'vscode'
+import { commands, Disposable, OutputChannel, QuickPickItem, QuickPickItemKind, window } from 'vscode'
 import { LeanClient } from './leanclient'
-import { batchExecute, displayResultError, ExecutionExitCode, ExecutionResult } from './utils/batch'
 import { LeanClientProvider } from './utils/clientProvider'
-import { cacheNotFoundError, lake, LakeRunner } from './utils/lake'
+import { FileUri } from './utils/exturi'
+import { displayLakeRunnerError, FetchMathlibCacheResult, lake, LakeRunner, LakeRunnerResult } from './utils/lake'
 import { lean } from './utils/leanEditorProvider'
 import { DirectGitDependency, Manifest, ManifestReadError, parseManifestInFolder } from './utils/manifest'
-import { displayNotification, displayNotificationWithInput, displayNotificationWithOptionalInput } from './utils/notifs'
+import { displayNotification, displayNotificationWithInput } from './utils/notifs'
 
 type DependencyToolchainResult =
     | { kind: 'Success'; dependencyToolchain: string }
@@ -27,23 +27,40 @@ export class ProjectOperationProvider implements Disposable {
             commands.registerCommand('lean4.project.clean', () => this.cleanProject()),
             commands.registerCommand('lean4.project.updateDependency', () => this.updateDependency()),
             commands.registerCommand('lean4.project.fetchCache', () => this.fetchMathlibCache()),
-            commands.registerCommand('lean4.project.fetchFileCache', () => this.fetchMathlibCacheForCurrentImports()),
+            commands.registerCommand('lean4.project.fetchOpenFileCaches', () =>
+                this.fetchMathlibCacheForOpenFiles(undefined),
+            ),
+            commands.registerCommand('lean4.project.fetchAllOpenFileCaches', () =>
+                this.fetchMathlibCacheForOpenFiles('all'),
+            ),
+            commands.registerCommand('lean4.project.fetchFileCache', () =>
+                this.fetchMathlibCacheForOpenFiles('current'),
+            ),
         )
     }
 
     private async buildProject() {
         await this.runOperation('Build Project', async lakeRunner => {
-            const fetchResult: 'Success' | 'CacheNotAvailable' | 'Cancelled' = await this.tryFetchingCache(lakeRunner)
-            if (fetchResult === 'Cancelled') {
+            const resolveResult: LakeRunnerResult = await lakeRunner.resolveDeps()
+            if (resolveResult.kind === 'Cancelled') {
+                return
+            }
+            if (resolveResult.kind !== 'Success') {
+                displayLakeRunnerError(resolveResult, 'Cannot clone missing project dependencies.')
                 return
             }
 
-            const result: ExecutionResult = await lakeRunner.build()
-            if (result.exitCode === ExecutionExitCode.Cancelled) {
+            const fetchResult: 'Success' | 'Failure' = await lakeRunner.tryFetchMathlibCacheWithError()
+            if (fetchResult !== 'Success') {
                 return
             }
-            if (result.exitCode !== ExecutionExitCode.Success) {
-                displayResultError(result, 'Cannot build project.')
+
+            const result: LakeRunnerResult = await lakeRunner.build()
+            if (result.kind === 'Cancelled') {
+                return
+            }
+            if (result.kind !== 'Success') {
+                displayLakeRunnerError(result, 'Cannot build project.')
                 return
             }
 
@@ -64,60 +81,57 @@ export class ProjectOperationProvider implements Disposable {
         }
 
         await this.runOperation('Clean Project', async lakeRunner => {
-            const cleanResult: ExecutionResult = await lakeRunner.clean()
-            if (cleanResult.exitCode === ExecutionExitCode.Cancelled) {
+            const cleanResult: LakeRunnerResult = await lakeRunner.clean()
+            if (cleanResult.kind === 'Cancelled') {
                 return
             }
-            if (cleanResult.exitCode !== ExecutionExitCode.Success) {
-                displayResultError(cleanResult, 'Cannot delete build artifacts.')
-                return
-            }
-
-            const checkResult: 'Yes' | 'No' | 'Cancelled' = await lakeRunner.isMathlibCacheGetAvailable()
-            if (checkResult === 'Cancelled') {
-                return
-            }
-            if (checkResult === 'No') {
-                displayNotification('Information', 'Project cleaned successfully.')
+            if (cleanResult.kind !== 'Success') {
+                displayLakeRunnerError(cleanResult, 'Cannot delete build artifacts.')
                 return
             }
 
-            const fetchMessage = "Project cleaned successfully. Do you wish to fetch Mathlib's build artifact cache?"
-            const fetchInput = 'Fetch Cache'
-            const fetchChoice: string | undefined = await displayNotificationWithInput(
+            const rebuildMessage = 'Project cleaned successfully. Do you wish to rebuild the project?'
+            const rebuildInput = 'Rebuild Project'
+            const rebuildChoice: string | undefined = await displayNotificationWithInput(
                 'Information',
-                fetchMessage,
-                [fetchInput],
-                'Do Not Fetch Cache',
+                rebuildMessage,
+                [rebuildInput],
+                'Do Not Rebuild',
             )
-            if (fetchChoice !== fetchInput) {
+            if (rebuildChoice !== rebuildInput) {
                 return
             }
 
-            const fetchResult: ExecutionResult = await lakeRunner.fetchMathlibCache()
-            if (fetchResult.exitCode === ExecutionExitCode.Cancelled) {
+            const fetchResult: 'Success' | 'Failure' = await lakeRunner.tryFetchMathlibCacheWithError()
+            if (fetchResult !== 'Success') {
                 return
             }
-            if (fetchResult.exitCode !== ExecutionExitCode.Success) {
-                void displayResultError(fetchResult, 'Cannot fetch Mathlib build artifact cache.')
+
+            const buildResult: LakeRunnerResult = await lakeRunner.build()
+            if (buildResult.kind === 'Cancelled') {
                 return
             }
-            displayNotification('Information', 'Mathlib build artifact cache fetched successfully.')
+            if (buildResult.kind !== 'Success') {
+                displayLakeRunnerError(buildResult, 'Cannot build project.')
+                return
+            }
+
+            displayNotification('Information', 'Project rebuilt successfully.')
         })
     }
 
     private async fetchMathlibCache() {
         await this.runOperation('Fetch Mathlib Build Cache', async lakeRunner => {
-            const result: ExecutionResult = await lakeRunner.fetchMathlibCache()
-            if (result.exitCode === ExecutionExitCode.Cancelled) {
+            const fetchResult: FetchMathlibCacheResult = await lakeRunner.fetchMathlibCache()
+            if (fetchResult.kind === 'Cancelled') {
                 return
             }
-            if (result.exitCode !== ExecutionExitCode.Success) {
-                if (result.stderr.includes(cacheNotFoundError)) {
-                    displayNotification('Error', 'This command cannot be used in non-Mathlib projects.')
-                    return
-                }
-                displayResultError(result, 'Cannot fetch Mathlib build artifact cache.')
+            if (fetchResult.kind === 'CacheUnavailable') {
+                displayNotification('Error', 'This command cannot be used in non-Mathlib projects.')
+                return
+            }
+            if (fetchResult.kind !== 'Success') {
+                displayLakeRunnerError(fetchResult, 'Cannot fetch Mathlib build artifact cache.')
                 return
             }
 
@@ -125,71 +139,110 @@ export class ProjectOperationProvider implements Disposable {
         })
     }
 
-    private async fetchMathlibCacheForCurrentImports() {
-        await this.runOperation('Fetch Mathlib Build Cache For Current Imports', async lakeRunner => {
-            const projectUri = lakeRunner.options.cwdUri!
+    private static readonly fileCacheOperationNames = {
+        all: 'Fetch Mathlib Build Cache For All Open Files',
+        current: 'Fetch Mathlib Build Cache For Current File',
+        undefined: 'Fetch Mathlib Build Cache For Open Files',
+    } as const
 
+    private async fetchMathlibCacheForOpenFiles(kind: 'all' | 'current' | undefined) {
+        await this.runOperation(ProjectOperationProvider.fileCacheOperationNames[`${kind}`], async lakeRunner => {
+            const projectUri = lakeRunner.options.cwdUri!
+            const fileUris = await this.determineFiles(kind, projectUri)
+            if (fileUris === undefined) {
+                displayNotification(
+                    'Error',
+                    'No open Lean files in the current project. Make sure to open a Lean file for which you wish to fetch the cache.',
+                )
+                return
+            }
+            if (fileUris.length === 0) {
+                return
+            }
+
+            const fetchResult: FetchMathlibCacheResult = await lakeRunner.fetchMathlibCacheForFiles(fileUris)
+            if (fetchResult.kind === 'Cancelled') {
+                return
+            }
+            if (fetchResult.kind === 'CacheUnavailable') {
+                displayNotification('Error', 'This command cannot be used in non-Mathlib projects.')
+                return
+            }
+            if (fetchResult.kind !== 'Success') {
+                displayLakeRunnerError(fetchResult, 'Cannot fetch Mathlib build artifact cache.')
+                return
+            }
+
+            displayNotification('Information', 'Mathlib build artifact cache for open file(s) fetched successfully.')
+        })
+    }
+
+    private async determineFiles(
+        kind: 'all' | 'current' | undefined,
+        projectUri: FileUri,
+    ): Promise<FileUri[] | undefined> {
+        if (kind === 'current') {
             const doc = lean.lastActiveLeanDocument
             if (doc === undefined) {
-                displayNotification(
-                    'Error',
-                    'No active Lean editor tab. Make sure to focus the Lean editor tab for which you want to fetch the cache.',
-                )
-                return
+                return undefined
             }
-            const docUri = doc.extUri
+            const uri = doc.extUri
+            if (uri.scheme !== 'file') {
+                return undefined
+            }
+            const relativeUri = uri.relativeTo(projectUri)
+            if (relativeUri === undefined) {
+                return undefined
+            }
+            return [relativeUri]
+        }
+        if (kind === 'all') {
+            return lean
+                .collectOpenLeanFileUris()
+                .map(uri => uri.relativeTo(projectUri))
+                .filter(uri => uri !== undefined)
+        }
+        const visibleDocUris: FileUri[] = []
+        const openDocUris: FileUri[] = []
+        for (const docUri of lean.collectOpenLeanFileUris()) {
+            const relativeUri = docUri.relativeTo(projectUri)
+            if (relativeUri === undefined) {
+                continue
+            }
+            if (lean.getVisibleLeanEditorsByUri(docUri).length > 0) {
+                visibleDocUris.push(relativeUri)
+            } else {
+                openDocUris.push(relativeUri)
+            }
+        }
 
-            if (docUri.scheme === 'untitled') {
-                displayNotification('Error', 'Cannot fetch cache of untitled files.')
-                return
-            }
+        if (visibleDocUris.length === 0 && openDocUris.length === 0) {
+            return undefined
+        }
 
-            const manifestResult: Manifest | ManifestReadError = await parseManifestInFolder(projectUri)
-            if (typeof manifestResult === 'string') {
-                displayNotification('Error', manifestResult)
-                return
-            }
+        visibleDocUris.sort((a, b) => a.fsPath.localeCompare(b.fsPath))
+        openDocUris.sort((a, b) => a.fsPath.localeCompare(b.fsPath))
 
-            const projectName = manifestResult.name
-            if (projectName === undefined) {
-                displayNotification(
-                    'Error',
-                    `Cannot determine project name from manifest. This is likely caused by the fact that the manifest version (${manifestResult.version}) is too outdated to contain the name of the project.`,
-                )
-                return
-            }
-            if (projectName !== 'mathlib') {
-                displayNotification(
-                    'Error',
-                    "Cache for current imports can only be fetched in Mathlib itself. Use the 'Project: Fetch Mathlib Build Cache' command for fetching the full Mathlib build cache in projects depending on Mathlib.",
-                )
-                return
-            }
+        const items: FileQuickPickItem[] = []
+        for (const relativeUri of visibleDocUris) {
+            items.push({ label: relativeUri.fsPath, picked: true, relativeUri })
+        }
+        if (visibleDocUris.length > 0 && openDocUris.length > 0) {
+            items.push({ label: '', kind: QuickPickItemKind.Separator })
+        }
+        for (const relativeUri of openDocUris) {
+            items.push({ label: relativeUri.fsPath, picked: true, relativeUri })
+        }
 
-            const relativeDocUri = docUri.relativeTo(projectUri)
-            if (relativeDocUri === undefined) {
-                displayNotification(
-                    'Error',
-                    `Cannot fetch cache for current imports: active file (${docUri.fsPath}) is not contained in active project folder (${projectUri.fsPath}).`,
-                )
-                return
-            }
-
-            const result: ExecutionResult = await lakeRunner.fetchMathlibCacheForFile(relativeDocUri)
-            if (result.exitCode === ExecutionExitCode.Cancelled) {
-                return
-            }
-            if (result.exitCode !== ExecutionExitCode.Success) {
-                displayResultError(result, `Cannot fetch Mathlib build artifact cache for '${relativeDocUri.fsPath}'.`)
-                return
-            }
-
-            displayNotificationWithOptionalInput(
-                'Information',
-                `Mathlib build artifact cache for '${relativeDocUri.fsPath}' fetched successfully.`,
-                [{ input: 'Restart File', action: () => this.clientProvider.restartFile(relativeDocUri) }],
-            )
+        const selected = await window.showQuickPick(items, {
+            title: 'Select files to fetch the Mathlib build cache for',
+            canPickMany: true,
         })
+        if (selected === undefined || selected.length === 0) {
+            return []
+        }
+
+        return selected.filter(item => item.kind !== QuickPickItemKind.Separator).map(item => item.relativeUri)
     }
 
     private async updateDependency() {
@@ -212,28 +265,11 @@ export class ProjectOperationProvider implements Disposable {
             return
         }
 
-        const dependencies: (DirectGitDependency & { remoteRevision?: string | undefined })[] =
-            await this.findUpdateableDependencies(manifestResult.directGitDependencies)
-        if (dependencies.length === 0) {
-            displayNotification('Information', 'Nothing to update - all dependencies are up-to-date.')
-            return
-        }
-
-        const items: GitDependencyQuickPickItem[] = dependencies.map(gitDep => {
-            const shortLocalRevision: string = gitDep.revision.substring(0, 7)
-            const shortRemoteRevision: string | undefined = gitDep.remoteRevision?.substring(0, 7)
-
-            const detail: string = shortRemoteRevision
-                ? `Current: ${shortLocalRevision} ⟹ New: ${shortRemoteRevision}`
-                : `Current: ${shortLocalRevision}`
-
-            return {
-                label: `${gitDep.name} @ ${gitDep.inputRevision}`,
-                description: gitDep.uri.toString(),
-                detail,
-                ...gitDep,
-            }
-        })
+        const items: GitDependencyQuickPickItem[] = manifestResult.directGitDependencies.map(gitDep => ({
+            label: gitDep.name,
+            description: gitDep.uri.toString(),
+            ...gitDep,
+        }))
 
         const dependencyChoice: GitDependencyQuickPickItem | undefined = await window.showQuickPick(items, {
             title: 'Choose a dependency to update',
@@ -251,16 +287,19 @@ export class ProjectOperationProvider implements Disposable {
         }
 
         await this.runOperation('Update Dependency', async lakeRunner => {
-            const result: ExecutionResult = await lakeRunner.updateDependency(dependencyChoice.name)
-            if (result.exitCode === ExecutionExitCode.Cancelled) {
+            const result: LakeRunnerResult = await lakeRunner.updateDependency(dependencyChoice.name)
+            if (result.kind === 'Cancelled') {
                 return
             }
-            if (result.exitCode !== ExecutionExitCode.Success) {
-                void displayResultError(result, 'Cannot update dependency.')
+            if (result.kind !== 'Success') {
+                displayLakeRunnerError(result, 'Cannot update dependency.')
                 return
             }
 
-            await this.tryFetchingCache(lakeRunner)
+            const fetchResult: 'Success' | 'Failure' = await lakeRunner.tryFetchMathlibCacheWithError()
+            if (fetchResult !== 'Success') {
+                return
+            }
 
             const localToolchainPath: string = join(activeFolderUri.fsPath, 'lean-toolchain')
             const dependencyToolchainPath: string = join(
@@ -287,38 +326,6 @@ export class ProjectOperationProvider implements Disposable {
                 }
             }
         })
-    }
-
-    private async findUpdateableDependencies(dependencies: DirectGitDependency[]) {
-        const augmented: (DirectGitDependency & { remoteRevision?: string | undefined })[] = []
-
-        for (const dependency of dependencies) {
-            const result: ExecutionResult = await batchExecute('git', [
-                'ls-remote',
-                dependency.uri.toString(),
-                dependency.inputRevision,
-            ])
-            if (result.exitCode !== ExecutionExitCode.Success) {
-                augmented.push(dependency)
-                continue
-            }
-
-            const matches: RegExpMatchArray | null = result.stdout.match(/^[a-z0-9]+/)
-            if (!matches) {
-                augmented.push(dependency)
-                continue
-            }
-
-            const remoteRevision: string = matches[0]
-            if (dependency.revision === remoteRevision) {
-                // Cannot be updated - filter it
-                continue
-            }
-
-            augmented.push({ remoteRevision, ...dependency })
-        }
-
-        return augmented
     }
 
     private async determineDependencyToolchain(
@@ -378,18 +385,6 @@ export class ProjectOperationProvider implements Disposable {
         return [localToolchain, dependencyToolchain]
     }
 
-    private async tryFetchingCache(lakeRunner: LakeRunner): Promise<'Success' | 'CacheNotAvailable' | 'Cancelled'> {
-        const fetchResult: ExecutionResult = await lakeRunner.fetchMathlibCache(true)
-        switch (fetchResult.exitCode) {
-            case ExecutionExitCode.Success:
-                return 'Success'
-            case ExecutionExitCode.Cancelled:
-                return 'Cancelled'
-            default:
-                return 'CacheNotAvailable'
-        }
-    }
-
     private async runOperation(context: string, command: (lakeRunner: LakeRunner) => Promise<void>) {
         if (this.isRunningOperation) {
             displayNotification(
@@ -423,8 +418,8 @@ export class ProjectOperationProvider implements Disposable {
                 toolchainUpdateMode: 'DoNotUpdate',
             })
 
-            const result: 'Success' | 'IsRestarting' = await activeClient.withStoppedClient(() => command(lakeRunner))
-            if (result === 'IsRestarting') {
+            const result = await activeClient.withStoppedClient(() => command(lakeRunner))
+            if (result.kind === 'IsRestarting') {
                 displayNotification('Error', 'Cannot run project action while restarting the server.')
             }
         } finally {
@@ -440,3 +435,7 @@ export class ProjectOperationProvider implements Disposable {
 }
 
 interface GitDependencyQuickPickItem extends QuickPickItem, DirectGitDependency {}
+
+type FileQuickPickItem =
+    | (QuickPickItem & { kind: QuickPickItemKind.Separator; relativeUri?: undefined })
+    | (QuickPickItem & { kind?: QuickPickItemKind.Default; relativeUri: FileUri })

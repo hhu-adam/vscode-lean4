@@ -1,6 +1,16 @@
 name: vscode-lean4 build
 
 on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - publish-packages
+          - release
+          - pre-release
   pull_request:
     branches:
     - '*'
@@ -10,33 +20,25 @@ on:
     tags:
       - '*'
 
-jobs:
-  build-and-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            os: ubuntu-latest
-            artifact: build-Linux release
-          # - name: macOS
-          #   os: macos-latest
-          #   artifact: build-macOS
-          - name: Windows
-            os: windows-latest
-            artifact: build-Windows
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+permissions:
+  contents: write
+  id-token: write
 
+jobs:
+  package:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
-        if: matrix.os == 'windows-latest'
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Build
         run: |
@@ -44,25 +46,25 @@ jobs:
           npm run build
 
       - name: Try publishing infoview-api
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') && matrix.os == 'ubuntu-latest' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') }}
         continue-on-error: true
         run: |
           npm publish --workspace=lean4-infoview-api --access=public
 
       - name: Try publishing infoview
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') && matrix.os == 'ubuntu-latest' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') }}
         continue-on-error: true
         run: |
           npm publish --workspace=lean4-infoview --access=public
 
       - name: Try publishing unicode-input
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') && matrix.os == 'ubuntu-latest' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') }}
         continue-on-error: true
         run: |
           npm publish --workspace=lean4-unicode-input --access=public
 
       - name: Try publishing unicode-input-component
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') && matrix.os == 'ubuntu-latest' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') }}
         continue-on-error: true
         run: |
           npm publish --workspace=lean4-unicode-input-component --access=public
@@ -77,40 +79,44 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-latest'
         with:
           name: vscode-lean4
           path: 'vscode-lean4/lean4-*.vsix'
 
-      - name: Publish packaged extension
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && !endsWith(github.ref, '-pre') && matrix.os == 'ubuntu-latest' }}
-        run: |
-          cd vscode-lean4
-          npx @vscode/vsce publish -i lean4-*.vsix
-          npx ovsx publish lean4-*.vsix
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+  build-and-test:
+    if: github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: build-and-test-linux
+            os: ubuntu-latest
+            artifact: build-Linux release
+          # - name: build-and-test-macos
+          #   os: macos-latest
+          #   artifact: build-macOS
+          - name: build-and-test-windows
+            os: windows-latest
+            artifact: build-Windows
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
 
-      - name: Publish packaged pre-release extension
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && endsWith(github.ref, '-pre') && matrix.os == 'ubuntu-latest' }}
-        run: |
-          cd vscode-lean4
-          npx @vscode/vsce publish --pre-release -i lean4-*.vsix
-          npx ovsx publish --pre-release lean4-*.vsix
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
-      - name: Upload extension as release
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-latest'
-        uses: softprops/action-gh-release@v1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
         with:
-          files: 'vscode-lean4/lean4-*.vsix'
-          fail_on_unmatched_files: true
-          prerelease: ${{ endsWith(github.ref, '-pre') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
 
       - name: Lint
         run: npm run lint
@@ -136,5 +142,260 @@ jobs:
         with:
           run: npm run test
 
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+  publish-vsce:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Download packaged extension
+        uses: actions/download-artifact@v4
+        with:
+          name: vscode-lean4
+          path: vscode-lean4
+
+      - name: Publish to VS Code Marketplace
+        run: |
+          cd vscode-lean4
+          npx @vscode/vsce publish $PRE_RELEASE_FLAG -i lean4-*.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          PRE_RELEASE_FLAG: ${{ endsWith(github.ref, '-pre') && '--pre-release' || '' }}
+
+  publish-ovsx:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Download packaged extension
+        uses: actions/download-artifact@v4
+        with:
+          name: vscode-lean4
+          path: vscode-lean4
+
+      - name: Publish to Open VSX
+        run: |
+          cd vscode-lean4
+          npx ovsx publish $PRE_RELEASE_FLAG lean4-*.vsix
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          PRE_RELEASE_FLAG: ${{ endsWith(github.ref, '-pre') && '--pre-release' || '' }}
+
+  github-release:
+    needs: [package, publish-vsce, publish-ovsx]
+    # Run even if one of the publish jobs failed, so a GitHub Release with notes
+    # is always created on a tag build. Tests are intentionally not a dependency:
+    # releases ship in parallel with the build-and-test matrix, matching the
+    # previous single-job behavior where publish ran before tests.
+    if: |
+      !cancelled() &&
+      needs.package.result == 'success' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Download packaged extension
+        uses: actions/download-artifact@v4
+        with:
+          name: vscode-lean4
+          path: vscode-lean4
+
+      - name: Generate release notes
+        run: |
+          current_tag="${GITHUB_REF#refs/tags/}"
+          is_pre="${{ endsWith(github.ref, '-pre') }}"
+
+          if [ "$is_pre" = "true" ]; then
+            # Pre-release: commits since last tag of any kind
+            prev_tag="$(git tag --sort=-v:refname --list 'v*' --no-contains | head -1)"
+          else
+            # Full release: commits since last full release (skip pre-release tags)
+            prev_tag="$(git tag --sort=-v:refname --list 'v*' --no-contains | grep -v -- '-pre$' | head -1)"
+          fi
+
+          echo "Previous tag: $prev_tag"
+          echo "Current tag: $current_tag"
+
+          # Fetch collaborators with write access (once, to avoid per-commit API calls)
+          write_users="$(gh api "/repos/${{ github.repository }}/collaborators" --paginate --jq '.[] | select(.permissions.push) | .login' 2>/dev/null || true)"
+
+          {
+            # If either marketplace publish failed, prepend a prominent warning so
+            # the partial failure is obvious on the Release page itself (in addition
+            # to the red CI status). Note: this banner is NOT updated automatically
+            # after a successful "Re-run failed jobs" — edit the release body by
+            # hand after a retry if you want the banner gone.
+            vsce_result="${{ needs.publish-vsce.result }}"
+            ovsx_result="${{ needs.publish-ovsx.result }}"
+            failed=()
+            if [ "$vsce_result" != "success" ]; then failed+=("VS Code Marketplace"); fi
+            if [ "$ovsx_result" != "success" ]; then failed+=("Open VSX"); fi
+            if [ ${#failed[@]} -gt 0 ]; then
+              if [ ${#failed[@]} -eq 2 ]; then
+                joined="${failed[0]} and ${failed[1]}"
+              else
+                joined="${failed[0]}"
+              fi
+              echo "> [!WARNING]"
+              echo "> This release could not be published to **$joined** from CI."
+              echo "> See [the CI run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) and use *Re-run failed jobs* once the upstream issue is resolved."
+              echo ""
+            fi
+
+            git log "$prev_tag".."$current_tag"^ --pretty=tformat:"%H %s" | while read -r hash msg; do
+              # Skip release commits
+              case "$msg" in
+                "Release "* | "chore: bump @leanprover/"*) continue ;;
+              esac
+
+              # Look up the GitHub author
+              gh_user="$(gh api "/repos/${{ github.repository }}/commits/$hash" --jq '.author.login // empty' 2>/dev/null || true)"
+
+              if [ -n "$gh_user" ] && ! echo "$write_users" | grep -qx "$gh_user"; then
+                # Append "author: user" inside existing trailing parentheses, or add new ones
+                if echo "$msg" | grep -q ')\s*$'; then
+                  msg="$(echo "$msg" | sed 's/)\s*$/, author: '"$gh_user"')/')"
+                else
+                  msg="$msg (author: $gh_user)"
+                fi
+              fi
+              echo "- $msg"
+            done
+          } > release_notes.md
+
+          echo "Release notes:"
+          cat release_notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload extension as release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: 'vscode-lean4/lean4-*.vsix'
+          fail_on_unmatched_files: true
+          prerelease: ${{ endsWith(github.ref, '-pre') }}
+          body_path: release_notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-packages:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'publish-packages'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Try publishing infoview-api
+        continue-on-error: true
+        run: npm publish --workspace=lean4-infoview-api --access=public
+
+      - name: Try publishing infoview
+        continue-on-error: true
+        run: npm publish --workspace=lean4-infoview --access=public
+
+      - name: Try publishing unicode-input
+        continue-on-error: true
+        run: npm publish --workspace=lean4-unicode-input --access=public
+
+      - name: Try publishing unicode-input-component
+        continue-on-error: true
+        run: npm publish --workspace=lean4-unicode-input-component --access=public
+
+  # `release` and `pre-release` can be dispatched from `master` for regular
+  # releases, or from a `patch-release/v<release>` branch to cut a patch on top
+  # of a previous release after master has already advanced. The version bump
+  # is the global max of all `v*` tags + 1, so patch releases automatically
+  # take the next patch number and subsequent master releases skip past it.
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Compute next version
+        id: version
+        run: |
+          last_tag="$(git tag --sort=-v:refname --list 'v*' --no-contains | head -1)"
+          echo "Last tag: $last_tag"
+          last_version="${last_tag#v}"
+          last_version="${last_version%-pre}"
+          new_version="$(echo "$last_version" | awk -F. '{$NF=$NF+1; print}' OFS=.)"
+          echo "New version: $new_version"
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Update version and create tag
+        run: |
+          new_version="${{ steps.version.outputs.new_version }}"
+          sed -i 's/"version": ".*"/"version": "'$new_version'"/' vscode-lean4/package.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $new_version"
+          git tag -a "v$new_version" -m "vscode-lean4 $new_version"
+
+      - name: Push
+        run: |
+          git push
+          git push --tags
+
+  pre-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'pre-release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Compute next version
+        id: version
+        run: |
+          last_tag="$(git tag --sort=-v:refname --list 'v*' --no-contains | head -1)"
+          echo "Last tag: $last_tag"
+          last_version="${last_tag#v}"
+          last_version="${last_version%-pre}"
+          new_version="$(echo "$last_version" | awk -F. '{$NF=$NF+1; print}' OFS=.)"
+          echo "New version: $new_version"
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Update version and create tag
+        run: |
+          new_version="${{ steps.version.outputs.new_version }}"
+          sed -i 's/"version": ".*"/"version": "'$new_version'"/' vscode-lean4/package.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $new_version (pre-release)"
+          git tag -a "v$new_version-pre" -m "vscode-lean4 $new_version (pre-release)"
+
+      - name: Push
+        run: |
+          git push
+          git push --tags

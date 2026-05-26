@@ -19,7 +19,7 @@ import { Details } from './collapsing'
 import { ConfigContext, EditorContext, EnvPosContext, LspDiagnosticsContext, ProgressContext } from './contexts'
 import { GoalsLocation, Locations, LocationsContext } from './goalLocation'
 import { FilteredGoals, goalsToString } from './goals'
-import { lspDiagToInteractive, MessagesList } from './messages'
+import { lspDiagToInteractive, MessagesList, TallyDisplay, tallyOfDiags } from './messages'
 import { RpcContext, useRpcSessionAtPos } from './rpcSessions'
 import { PanelWidgetDisplay } from './userWidget'
 import {
@@ -32,6 +32,7 @@ import {
     useAsyncWithTrigger,
     useEvent,
     usePausableState,
+    withPreventedClickOnTextSelection,
 } from './util'
 
 type InfoStatus = 'updating' | 'error' | 'ready'
@@ -75,7 +76,7 @@ const InfoStatusBar = React.memo((props: InfoStatusBarProps) => {
     }
 
     return (
-        <summary style={{ transition: 'color 0.5s ease' }} className={'mv2 pointer ' + statusColor}>
+        <summary style={{ transition: 'color 0.5s ease' }} className={'mv2 pointer non-selectable' + statusColor}>
             {locationString}
             {isPinned && !isPaused && ' (pinned)'}
             {!isPinned && isPaused && ' (paused)'}
@@ -220,7 +221,7 @@ function GoalInfoDisplay(props: GoalInfoDisplayProps) {
                 if (widget.name)
                     return (
                         <details key={`widget::${widget.id}::${widget.range?.toString()}`} open>
-                            <summary className="mv2 pointer">{widget.name}</summary>
+                            <summary className="mv2 pointer non-selectable">{widget.name}</summary>
                             {inner}
                         </details>
                     )
@@ -252,10 +253,7 @@ const InfoDisplayContent = React.memo((props: InfoDisplayContentProps) => {
                     Error updating: {error}.
                     <a
                         className="link pointer dim"
-                        onClick={e => {
-                            e.preventDefault()
-                            void triggerUpdate()
-                        }}
+                        onClick={withPreventedClickOnTextSelection(_ => void triggerUpdate())}
                     >
                         {' '}
                         Try again.
@@ -263,11 +261,18 @@ const InfoDisplayContent = React.memo((props: InfoDisplayContentProps) => {
                 </div>
             )}
             <GoalInfoDisplay pos={pos} goals={goals} termGoal={termGoal} userWidgets={userWidgets} />
-            <div style={{ display: hasMessages ? 'block' : 'none' }} key="messages">
+            <div style={hasMessages ? {} : { display: 'none' }} key="messages">
                 <Details initiallyOpen key="messages">
-                    <>Messages ({messages.length})</>
+                    <>
+                        Messages <TallyDisplay t={tallyOfDiags(messages)}></TallyDisplay>
+                    </>
                     <div className="ml1">
-                        <MessagesList uri={pos.uri} messages={messages} />
+                        <MessagesList
+                            uri={pos.uri}
+                            messages={messages}
+                            pos={pos}
+                            sortOrder={'Sort by proximity to text cursor'}
+                        />
                     </div>
                 </Details>
             </div>
@@ -278,20 +283,14 @@ const InfoDisplayContent = React.memo((props: InfoDisplayContentProps) => {
                         Updating is paused.{' '}
                         <a
                             className="link pointer dim"
-                            onClick={e => {
-                                e.preventDefault()
-                                void triggerUpdate()
-                            }}
+                            onClick={withPreventedClickOnTextSelection(_ => void triggerUpdate())}
                         >
                             Refresh
                         </a>{' '}
                         or{' '}
                         <a
                             className="link pointer dim"
-                            onClick={e => {
-                                e.preventDefault()
-                                setPaused(false)
-                            }}
+                            onClick={withPreventedClickOnTextSelection(_ => setPaused(false))}
                         >
                             resume updating
                         </a>{' '}
@@ -510,12 +509,16 @@ function InfoAux(props: InfoProps) {
     // with e.g. a new `pos`.
     type InfoRequestResult = Omit<InfoDisplayProps, 'triggerUpdate'>
     const [state, triggerUpdateCore] = useAsyncWithTrigger(
-        () =>
+        abortSignal =>
             new Promise<InfoRequestResult>((resolve, reject) => {
-                const goalsReq = getInteractiveGoals(rpcSess, DocumentPosition.toTdpp(pos))
-                const termGoalReq = getInteractiveTermGoal(rpcSess, DocumentPosition.toTdpp(pos))
-                const widgetsReq = Widget_getWidgets(rpcSess, pos).catch(discardMethodNotFound)
-                const messagesReq = getInteractiveDiagnostics(rpcSess, { start: pos.line, end: pos.line + 1 })
+                const goalsReq = getInteractiveGoals(rpcSess, DocumentPosition.toTdpp(pos), { abortSignal })
+                const termGoalReq = getInteractiveTermGoal(rpcSess, DocumentPosition.toTdpp(pos), { abortSignal })
+                const widgetsReq = Widget_getWidgets(rpcSess, pos, { abortSignal }).catch(discardMethodNotFound)
+                const messagesReq = getInteractiveDiagnostics(
+                    rpcSess,
+                    { start: pos.line, end: pos.line + 1 },
+                    { abortSignal },
+                )
                     // fall back to non-interactive diagnostics when lake fails
                     // (see https://github.com/leanprover/vscode-lean4/issues/90)
                     .then(diags => (diags.length === 0 ? lspDiagsHere.map(lspDiagToInteractive) : diags))
@@ -565,7 +568,14 @@ function InfoAux(props: InfoProps) {
                             // to the RPC sessions. Try again.
                             setUpdaterTick(t => t + 1)
                             reject('retry')
+                            return
                         }
+                        // When `ex?.code === RpcErrorCode.RequestCancelled`,
+                        // we fall through to resolving with an error below.
+                        // - In case we were cancelled by `useAsyncWithTrigger`,
+                        //   `resolve` will do nothing.
+                        // - We should not be cancelled otherwise,
+                        //   and if that happens it is an error that should be displayed.
 
                         let errorString = ''
                         if (typeof ex === 'string') {

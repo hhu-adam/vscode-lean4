@@ -3,15 +3,21 @@ import {
     Disposable,
     EventEmitter,
     ExtensionContext,
+    TabInputText,
     TextDocument,
+    TextDocumentChangeEvent,
     TextEditor,
     TextEditorEdit,
     TextEditorSelectionChangeEvent,
     window,
     workspace,
 } from 'vscode'
-import { ExtUri, isExtUri, toExtUriOrError } from './exturi'
+import { ExtUri, FileUri, isExtUri, toExtUri, toExtUriOrError } from './exturi'
 import { groupByKey, groupByUniqueKey } from './groupBy'
+
+export function isLeanDocument(doc: TextDocument): boolean {
+    return isExtUri(doc.uri) && (doc.languageId === 'lean4' || doc.languageId === 'lean')
+}
 
 export class LeanDocument {
     constructor(
@@ -91,52 +97,13 @@ class LeanEditorIndex {
     }
 }
 
-export function isLeanDocument(doc: TextDocument): boolean {
-    return isExtUri(doc.uri) && doc.languageId === 'lean4'
-}
-
-export function asLeanDocument(doc: TextDocument): LeanDocument | undefined {
-    if (isLeanDocument(doc)) {
-        return new LeanDocument(doc, toExtUriOrError(doc.uri))
-    }
-    return undefined
-}
-
-export function filterLeanDocuments(docs: readonly TextDocument[]): LeanDocument[] {
-    return docs.map(doc => asLeanDocument(doc)).filter(doc => doc !== undefined)
-}
-
-export function filterLeanDocument(doc: TextDocument | undefined): LeanDocument | undefined {
-    if (doc === undefined) {
-        return undefined
-    }
-    return asLeanDocument(doc)
-}
-
-export function isLeanEditor(editor: TextEditor): boolean {
-    return isLeanDocument(editor.document)
-}
-
-export function asLeanEditor(editor: TextEditor): LeanEditor | undefined {
-    if (isLeanEditor(editor)) {
-        return new LeanEditor(editor, toExtUriOrError(editor.document.uri))
-    }
-    return undefined
-}
-
-export function filterLeanEditors(editors: readonly TextEditor[]): LeanEditor[] {
-    return editors.map(editor => asLeanEditor(editor)).filter(editor => editor !== undefined)
-}
-
-export function filterLeanEditor(editor: TextEditor | undefined): LeanEditor | undefined {
-    if (editor === undefined) {
-        return undefined
-    }
-    return asLeanEditor(editor)
-}
-
 export class LeanEditorProvider implements Disposable {
     private subscriptions: Disposable[] = []
+
+    // In mode 'Lean', the `LeanEditorProvider` will provide API for editors and documents with a language ID of `lean4` and `ExtUri` URIs, i.e. proper Lean documents.
+    // In mode 'Text', the `LeanEditorProvider` will provide API for editors and documents with `ExtUri` uris, i.e. any file that might be considered in some context of the extension.
+    // Both of these are useful occasionally, especially since VS Code lacks API to e.g. determine which visible text editors were revealed just now.
+    private mode: 'Lean' | 'Text'
 
     private _visibleLeanEditors: LeanEditor[]
     private visibleLeanEditorsByUri: LeanEditorIndex
@@ -169,18 +136,25 @@ export class LeanEditorProvider implements Disposable {
     private readonly onDidConcealLeanEditorEmitter = new EventEmitter<LeanEditor>()
     readonly onDidConcealLeanEditor = this.onDidConcealLeanEditorEmitter.event
 
+    private readonly onDidChangeLeanDocumentEmitter = new EventEmitter<TextDocumentChangeEvent>()
+    readonly onDidChangeLeanDocument = this.onDidChangeLeanDocumentsEmitter.event
+
     private readonly onDidChangeLeanEditorSelectionEmitter = new EventEmitter<TextEditorSelectionChangeEvent>()
     readonly onDidChangeLeanEditorSelection = this.onDidChangeLeanEditorSelectionEmitter.event
 
-    constructor() {
-        this._visibleLeanEditors = filterLeanEditors(window.visibleTextEditors)
+    constructor(mode: 'Lean' | 'Text') {
+        this.mode = mode
+
+        this._visibleLeanEditors = this.filterLeanEditors(window.visibleTextEditors)
         this.visibleLeanEditorsByUri = new LeanEditorIndex(this._visibleLeanEditors)
         this.subscriptions.push(window.onDidChangeVisibleTextEditors(editors => this.updateVisibleTextEditors(editors)))
 
-        this._activeLeanEditor = filterLeanEditor(window.activeTextEditor)
+        this._activeLeanEditor = this.filterLeanEditor(window.activeTextEditor)
+        this._lastActiveLeanEditor = this.filterLeanEditor(window.activeTextEditor)
+        this._lastActiveLeanDocument = this.filterLeanDocument(window.activeTextEditor?.document)
         this.subscriptions.push(window.onDidChangeActiveTextEditor(editor => this.updateActiveTextEditor(editor)))
 
-        this._leanDocuments = filterLeanDocuments(workspace.textDocuments)
+        this._leanDocuments = this.filterLeanDocuments(workspace.textDocuments)
         this.leanDocumentsByUri = new LeanDocumentIndex(this._leanDocuments)
         this.subscriptions.push(
             workspace.onDidOpenTextDocument(doc => {
@@ -203,6 +177,7 @@ export class LeanEditorProvider implements Disposable {
                 this.invalidateClosedLastActiveLeanDocument(doc)
             }),
         )
+        this.subscriptions.push(workspace.onDidChangeTextDocument(event => this.updateDocument(event)))
         this.subscriptions.push(window.onDidChangeTextEditorSelection(event => this.updateTextEditorSelection(event)))
     }
 
@@ -221,7 +196,7 @@ export class LeanEditorProvider implements Disposable {
     }
 
     private updateVisibleLeanEditors(visibleTextEditors: readonly TextEditor[]) {
-        const newVisibleLeanEditors = filterLeanEditors(visibleTextEditors)
+        const newVisibleLeanEditors = this.filterLeanEditors(visibleTextEditors)
         if (
             newVisibleLeanEditors.length === this._visibleLeanEditors.length &&
             newVisibleLeanEditors.every((newVisibleLeanEditor, i) =>
@@ -240,7 +215,7 @@ export class LeanEditorProvider implements Disposable {
         newVisibleTextEditors: readonly TextEditor[],
     ) {
         const oldVisibleLeanEditorsIndex = new Set(oldVisibleLeanEditors.map(leanEditor => leanEditor.editor))
-        const newVisibleLeanEditors = filterLeanEditors(newVisibleTextEditors)
+        const newVisibleLeanEditors = this.filterLeanEditors(newVisibleTextEditors)
         const revealedLeanEditors = newVisibleLeanEditors.filter(
             newVisibleLeanEditor => !oldVisibleLeanEditorsIndex.has(newVisibleLeanEditor.editor),
         )
@@ -253,7 +228,7 @@ export class LeanEditorProvider implements Disposable {
         oldVisibleLeanEditors: readonly LeanEditor[],
         newVisibleTextEditors: readonly TextEditor[],
     ) {
-        const newVisibleLeanEditors = filterLeanEditors(newVisibleTextEditors)
+        const newVisibleLeanEditors = this.filterLeanEditors(newVisibleTextEditors)
         const newVisibleLeanEditorsIndex = new Set(newVisibleLeanEditors.map(leanEditor => leanEditor.editor))
         const concealedLeanEditors = oldVisibleLeanEditors.filter(
             newVisibleLeanEditor => !newVisibleLeanEditorsIndex.has(newVisibleLeanEditor.editor),
@@ -264,7 +239,7 @@ export class LeanEditorProvider implements Disposable {
     }
 
     private updateActiveLeanEditor(activeTextEditor: TextEditor | undefined) {
-        const newActiveLeanEditor = filterLeanEditor(activeTextEditor)
+        const newActiveLeanEditor = this.filterLeanEditor(activeTextEditor)
         if (LeanEditor.equalsWithUndefined(newActiveLeanEditor, this._activeLeanEditor)) {
             return
         }
@@ -283,7 +258,7 @@ export class LeanEditorProvider implements Disposable {
     }
 
     private updateLastActiveLeanEditor(activeTextEditor: TextEditor | undefined) {
-        const newLastActiveLeanEditor = filterLeanEditor(activeTextEditor)
+        const newLastActiveLeanEditor = this.filterLeanEditor(activeTextEditor)
         if (newLastActiveLeanEditor === undefined) {
             return
         }
@@ -295,7 +270,7 @@ export class LeanEditorProvider implements Disposable {
     }
 
     private updateLeanDocuments(textDocuments: readonly TextDocument[]) {
-        const newLeanDocuments = filterLeanDocuments(textDocuments)
+        const newLeanDocuments = this.filterLeanDocuments(textDocuments)
         if (
             newLeanDocuments.length === this._leanDocuments.length &&
             newLeanDocuments.every((newLeanDocument, i) => newLeanDocument.equals(this._leanDocuments[i]))
@@ -308,7 +283,7 @@ export class LeanEditorProvider implements Disposable {
     }
 
     private openLeanDocument(textDocument: TextDocument) {
-        const leanTextDocument = filterLeanDocument(textDocument)
+        const leanTextDocument = this.filterLeanDocument(textDocument)
         if (leanTextDocument === undefined) {
             return
         }
@@ -316,7 +291,7 @@ export class LeanEditorProvider implements Disposable {
     }
 
     private closeLeanDocument(textDocument: TextDocument) {
-        const leanTextDocument = filterLeanDocument(textDocument)
+        const leanTextDocument = this.filterLeanDocument(textDocument)
         if (leanTextDocument === undefined) {
             return
         }
@@ -331,7 +306,7 @@ export class LeanEditorProvider implements Disposable {
     }
 
     private updateLastActiveLeanDocument(activeTextEditor: TextEditor | undefined) {
-        const newLastActiveLeanDocument = filterLeanDocument(activeTextEditor?.document)
+        const newLastActiveLeanDocument = this.filterLeanDocument(activeTextEditor?.document)
         if (newLastActiveLeanDocument === undefined) {
             return
         }
@@ -342,11 +317,67 @@ export class LeanEditorProvider implements Disposable {
         this.onDidChangeLastActiveLeanDocumentEmitter.fire(newLastActiveLeanDocument)
     }
 
+    private updateDocument(event: TextDocumentChangeEvent) {
+        if (!this.isLeanDocument(event.document)) {
+            return
+        }
+        this.onDidChangeLeanDocumentEmitter.fire(event)
+    }
+
     private updateTextEditorSelection(event: TextEditorSelectionChangeEvent) {
-        if (!isLeanEditor(event.textEditor)) {
+        if (!this.isLeanEditor(event.textEditor)) {
             return
         }
         this.onDidChangeLeanEditorSelectionEmitter.fire(event)
+    }
+
+    private isLeanDocument(doc: TextDocument): boolean {
+        switch (this.mode) {
+            case 'Lean':
+                return isLeanDocument(doc)
+            case 'Text':
+                return isExtUri(doc.uri)
+        }
+    }
+
+    private asLeanDocument(doc: TextDocument): LeanDocument | undefined {
+        if (this.isLeanDocument(doc)) {
+            return new LeanDocument(doc, toExtUriOrError(doc.uri))
+        }
+        return undefined
+    }
+
+    private filterLeanDocuments(docs: readonly TextDocument[]): LeanDocument[] {
+        return docs.map(doc => this.asLeanDocument(doc)).filter(doc => doc !== undefined)
+    }
+
+    private filterLeanDocument(doc: TextDocument | undefined): LeanDocument | undefined {
+        if (doc === undefined) {
+            return undefined
+        }
+        return this.asLeanDocument(doc)
+    }
+
+    private isLeanEditor(editor: TextEditor): boolean {
+        return this.isLeanDocument(editor.document)
+    }
+
+    private asLeanEditor(editor: TextEditor): LeanEditor | undefined {
+        if (this.isLeanEditor(editor)) {
+            return new LeanEditor(editor, toExtUriOrError(editor.document.uri))
+        }
+        return undefined
+    }
+
+    private filterLeanEditors(editors: readonly TextEditor[]): LeanEditor[] {
+        return editors.map(editor => this.asLeanEditor(editor)).filter(editor => editor !== undefined)
+    }
+
+    private filterLeanEditor(editor: TextEditor | undefined): LeanEditor | undefined {
+        if (editor === undefined) {
+            return undefined
+        }
+        return this.asLeanEditor(editor)
     }
 
     get visibleLeanEditors(): readonly LeanEditor[] {
@@ -377,6 +408,34 @@ export class LeanEditorProvider implements Disposable {
         return this.leanDocumentsByUri.get(uri)
     }
 
+    collectOpenLeanFileUris(): FileUri[] {
+        const openLeanFileUris: FileUri[] = []
+        // `workspace.textDocuments` (and thus `leanDocuments`) has the following quirks:
+        // - It may contain documents that are invisible to the user, i.e. not open as tabs (e.g. when another extension opens a text document)
+        // - It may not contain documents that are visible to the user, i.e. open as tab (e.g. when starting VS Code for the first time, documents for tabs are opened lazily)
+        // This means that `leanDocuments` may be more incomplete than users might expect, and also contain some entries that users may not expect.
+        openLeanFileUris.push(...this.leanDocuments.map(doc => doc.extUri).filter(extUri => extUri.scheme === 'file'))
+        // `window.tabGroups` does not allow accessing the language ID of a tab, so we can only approximate it through the file extension of the URI of the tab. This has the following quirks:
+        // - It may contain tabs with a `.lean` file extension that do not have a `lean4` language ID (e.g. if the user selected the language ID in the UI)
+        // - It may contain tabs with a `lean4` language ID that do not have a `.lean` file extension (e.g. if the user selected the language ID in the UI)
+        openLeanFileUris.push(
+            ...window.tabGroups.all
+                .flatMap(g => g.tabs)
+                .map(t => t.input)
+                .filter(i => i instanceof TabInputText)
+                .map(i => toExtUri(i.uri))
+                .filter(extUri => extUri !== undefined && extUri.scheme === 'file')
+                .filter(fileUri => fileUri.extName() === '.lean'),
+        )
+        const deduplicated = [...new Map(openLeanFileUris.map(uri => [uri.toString(), uri])).values()]
+        // Approximation for the set of open Lean file URIs (due to the aforementioned VS Code API limitations).
+        // - May contain Lean file URIs that are invisible to the user and Lean file URIs with a `.lean` file extension that do not have a `lean4` language ID
+        // - May not contain Lean file URIs that do not have a `.lean` file extension but are visible to the user
+        // In most cases, this is an acceptable compromise, since invisible Lean files,
+        // `.lean` files without a `lean4` language ID and files with a `lean4` language ID but without a `.lean` extension are rare.
+        return deduplicated
+    }
+
     registerLeanEditorCommand(
         command: string,
         callback: (leanEditor: LeanEditor, edit: TextEditorEdit, ...args: any[]) => void,
@@ -385,7 +444,7 @@ export class LeanEditorProvider implements Disposable {
         return commands.registerTextEditorCommand(
             command,
             (editor, edit, ...args) => {
-                const leanEditor = filterLeanEditor(editor)
+                const leanEditor = this.filterLeanEditor(editor)
                 if (leanEditor === undefined) {
                     return
                 }
@@ -403,16 +462,20 @@ export class LeanEditorProvider implements Disposable {
 }
 
 export let lean: LeanEditorProvider
+export let text: LeanEditorProvider
 
 /** Must be called at the very start when the extension is activated so that `lean` is defined. */
-export function registerLeanEditorProvider(context: ExtensionContext) {
-    lean = new LeanEditorProvider()
+export function registerLeanEditorProviders(context: ExtensionContext) {
+    lean = new LeanEditorProvider('Lean')
+    text = new LeanEditorProvider('Text')
     context.subscriptions.push(lean)
+    context.subscriptions.push(text)
     context.subscriptions.push({
         dispose: () => {
             const u: any = undefined
-            // Implicit invariant: When the extension deactivates, `lean` is not called after this assignment.
+            // Implicit invariant: When the extension deactivates, `lean` and `text` are not called after these assignments.
             lean = u
+            text = u
         },
     })
 }

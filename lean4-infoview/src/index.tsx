@@ -11,7 +11,7 @@ export { InteractiveCode, InteractiveCodeProps, Markdown } from './infoview/inte
 export { renderInfoview } from './infoview/main'
 export { RpcContext, useRpcSession } from './infoview/rpcSessions'
 export { ServerVersion } from './infoview/serverVersion'
-export { DynamicComponent, DynamicComponentProps, PanelWidgetProps, importWidgetModule } from './infoview/userWidget'
+export { DynamicComponent, DynamicComponentProps, importWidgetModule, PanelWidgetProps } from './infoview/userWidget'
 export {
     DocumentPosition,
     mapRpcError,
@@ -30,7 +30,10 @@ export { MessageData }
 /** Display the given message data as interactive, pretty-printed text. */
 export function InteractiveMessageData({ msg }: { msg: MessageData }) {
     const rs = useRpcSession()
-    const interactive = useAsync(() => InteractiveDiagnostics_msgToInteractive(rs, msg, 0), [rs, msg])
+    const interactive = useAsync(
+        abortSignal => InteractiveDiagnostics_msgToInteractive(rs, msg, 0, { abortSignal }),
+        [rs, msg],
+    )
 
     if (interactive.state === 'resolved') {
         return <InteractiveMessage fmt={interactive.value} />

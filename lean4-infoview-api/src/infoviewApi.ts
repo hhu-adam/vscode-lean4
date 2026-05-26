@@ -7,7 +7,24 @@ import type {
     WorkspaceEdit,
 } from 'vscode-languageserver-protocol'
 
+export type ModuleHierarchyOptions = {}
+
+export type HighlightMatchesOptions = {}
+
+export type RpcWireFormat = 'v0' | 'v1'
+
+export interface RpcOptions {
+    highlightMatchesProvider?: HighlightMatchesOptions
+    rpcWireFormat?: RpcWireFormat
+}
+
+export interface LeanServerCapabilities {
+    moduleHierarchyProvider?: ModuleHierarchyOptions
+    rpcProvider?: RpcOptions
+}
+
 export type ExpectedTypeVisibility = 'Expanded by default' | 'Collapsed by default' | 'Hidden'
+export type MessageOrder = 'Sort by proximity to text cursor' | 'Sort by message location'
 
 export interface InfoviewConfig {
     allErrorsOnLine: boolean
@@ -22,6 +39,7 @@ export interface InfoviewConfig {
     hideInaccessibleAssumptions: boolean
     hideLetValues: boolean
     showTooltipOnHover: boolean
+    messageOrder: MessageOrder
 }
 
 /**
@@ -30,12 +48,27 @@ export interface InfoviewConfig {
  */
 export type TextInsertKind = 'here' | 'above'
 
+export interface ClientRequestOptions {
+    /**
+     * Can be used to cancel the request.
+     *
+     * This does not immediately reject the promise;
+     * instead, an LSP `$/cancelRequest` notification is sent to the Lean server
+     * The request handler can choose to ignore it,
+     * to return a partial result,
+     * or to produce a `RequestCancelled` error.
+     *
+     * Does nothing if the promise has already been resolved or rejected.
+     */
+    abortSignal?: AbortSignal
+}
+
 /** Interface that the InfoView WebView uses to talk to the hosting editor. */
 export interface EditorApi {
     saveConfig(config: InfoviewConfig): Promise<any>
 
     /** Make a request to the LSP server. */
-    sendClientRequest(uri: string, method: string, params: any): Promise<any>
+    sendClientRequest(uri: string, method: string, params: any, options?: ClientRequestOptions): Promise<any>
     /** Send a notification to the LSP server. */
     sendClientNotification(uri: string, method: string, params: any): Promise<void>
 
@@ -109,6 +142,7 @@ export const defaultInfoviewConfig: InfoviewConfig = {
     hideInaccessibleAssumptions: false,
     hideLetValues: false,
     showTooltipOnHover: true,
+    messageOrder: 'Sort by proximity to text cursor',
 }
 
 export type InfoviewActionKind =
@@ -132,8 +166,12 @@ export type ContextMenuEntry =
     | 'refresh'
     | 'pauseAllMessages'
     | 'unpauseAllMessages'
+    | 'copyState'
+    | 'copyMessage'
     | 'goToPinnedLocation'
     | 'goToMessageLocation'
+    | 'hideTraceSearch'
+    | 'showTraceSearch'
     | 'displayTargetBeforeAssumptions'
     | 'displayAssumptionsBeforeTarget'
     | 'hideTypeAssumptions'
@@ -175,7 +213,7 @@ export interface InfoviewApi {
     sentClientNotification(method: string, params: any): Promise<void>
 
     /** Must fire with the server's initialization message when the server is started or restarted. */
-    serverRestarted(serverInitializeResult: InitializeResult): Promise<void>
+    serverRestarted(serverInitializeResult: InitializeResult<LeanServerCapabilities>): Promise<void>
     /** Must fire with the server's message when the server is stopped. */
     serverStopped(serverStoppedReason: ServerStoppedReason | undefined): Promise<void>
 

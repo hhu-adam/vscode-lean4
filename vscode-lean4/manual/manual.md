@@ -18,6 +18,7 @@ This manual covers how to interact with the most recent version of Lean 4 using 
     - [Hovers](#hovers)
     - [Auto-completion](#auto-completion)
     - [Code actions](#code-actions)
+    = [Inlay hints](#inlay-hints)
     - [Occurrence highlighting](#occurrence-highlighting)
     - [Semantic highlighting](#semantic-highlighting)
     - [Go to symbol](#go-to-symbol)
@@ -31,12 +32,16 @@ This manual covers how to interact with the most recent version of Lean 4 using 
     - [Find references](#find-references)
     - [Workspace symbol search](#workspace-symbol-search)
     - [Project text search](#project-text-search)
+    - [Module hierarchy](#module-hierarchy)
+    - [Copy module name](#copy-module-name)
     - [Go to file](#go-to-file)
     - [Explorer](#explorer)
 1. [Managing Lean projects](#managing-lean-projects)
     - [Creating projects](#creating-projects)
     - [Opening projects](#opening-projects)
+    - [Nested projects](#nested-projects)
     - [Project actions](#project-actions)
+    - [Lakefile editing](#lakefile-editing)
     - [Terminal](#terminal)
 1. [Managing Lean versions](#managing-lean-versions)
     - [Elan](#elan)
@@ -171,6 +176,11 @@ In the scroll bar on the right of the editor, red / orange / blue areas denote t
 
 The amount of diagnostics for all open files are displayed in the left portion of the status bar at the bottom of VS Code using error, warning and information symbols. Clicking this section of the status bar will open the 'Problems view' of VS Code that displays all diagnostics for all currently open files and that can be used to quickly navigate to the span of the diagnostic by clicking on an entry or by using the arrow keys and `Enter`. It can also be opened using the ['View: Show Problems'](command:workbench.actions.view.problems) command or `Ctrl+Shift+M` (`Cmd+Shift+M`).
 
+In addition to VS Code's diagnostic squigglies, the Lean 4 VS Code extension provides some additional editor decorations for diagnostics:
+1. **Error and warning range decorations**. On the left side of the editor, a circled cross or a warning sign are displayed on lines that contain an error or a warning, respectively. For errors that extend across multiple lines, a vertical red line extends from the circled cross to the last line of the error, where it bends to the right. These decorations can be disabled by unsetting the 'Lean 4 > Show Diagnostic Gutter Decorations' setting.
+1. **'Unsolved goals' decorations**. On lines where an 'unsolved goals' error ends, a special work-in-progress marker is displayed. These decorations can be disabled by unsetting the 'Lean 4 > Show Unsolved Goals Decorations' setting. They can also be themed by using the 'Lean 4 > Unsolved Goals Decoration Light Theme Color' and 'Lean 4 > Unsolved Goals Decoration Dark Theme Color' settings.
+1. **'Goals accomplished' decorations**. On the left side of the editor, a double checkmark is displayed next to theorems that contain no errors and no `sorry`s anymore. The double checkmark icon can be disabled or replaced with another icon by changing the 'Lean 4 > Goals Accomplished Decoration Kind' setting.
+
 Using the ['Error Lens'](command:extension.open?%5B%22usernamehw.errorlens%22%5D) VS Code extension, the line that a diagnostic occurs in is highlighted and the message of the diagnostic is displayed inline in the editor.
 
 <br/>
@@ -236,6 +246,16 @@ The Unicode input mechanism has several configuration options:
 | :--: | 
 | *Hover for Unicode symbol displaying all abbreviation identifiers* |
 
+To use Unicode symbols outside of text editors - for example in the search bar, find widget or settings - a symbol picker is available. The ['Input: Find Unicode Symbol...'](command:lean4.input.findSymbol) command can be used from the [command menu](#command-menu) or the [command palette](#command-palette). After selecting a symbol, a second dialog allows choosing between copying the symbol to the clipboard and inserting it into the active text editor.
+
+There are also two direct commands that skip the second dialog:
+- ['Input: Insert Unicode Symbol...'](command:lean4.input.insertSymbol) inserts the chosen symbol directly into the active text editor. It is bound to `Ctrl+Alt+\` (`Cmd+Alt+\`) when a text editor is focused.
+- ['Input: Copy Unicode Symbol...'](command:lean4.input.copySymbol) copies the chosen symbol directly to the clipboard. It is bound to `Ctrl+Alt+\` (`Cmd+Alt+\`) when no text editor is focused.
+
+Both direct commands display a button on each item for the other action, so that e.g. a symbol can be copied to the clipboard while using the insert command without having to reopen the dialog.
+
+The search field in the symbol picker supports the same abbreviation identifiers as the regular abbreviation mechanism: typing an abbreviation like `alpha` will find the symbol `α`. The leader character (`\`) can optionally be included. Searching is also possible in reverse by typing or pasting a Unicode symbol to find the abbreviation identifiers that produce it.
+
 ### InfoView
 
 The InfoView is the main interactive component of Lean. It can be used to inspect proof goals, expected types and [diagnostics](#errors-warnings-and-information), as well as render arbitrary user interfaces called ['widgets'](#widgets) for Lean code.
@@ -253,9 +273,11 @@ The InfoView is subdivided into several sections, most of which are only display
 1. **Expected type**. If the text cursor is positioned in a Lean term, the InfoView will display the current expected type at the position of the cursor. 
 1. **Widget sections**. Widgets may add arbitrary additional sections to the InfoView that are only displayed when the respective widget is active.
 1. **Messages**. If the text cursor is positioned on a line of the span of a [diagnostic](#errors-warnings-and-information), an interactive variant of the diagnostic is displayed. Disabling the 'Lean 4 > Infoview: All Errors On Line' option will only display errors that are to the right of the text cursor.
-1. **All Messages**. Always displayed. Contains interactive variants of all [diagnostics](#errors-warnings-and-information) present in the file.
+1. **All Messages**. Always displayed. Contains interactive variants of all [diagnostics](#errors-warnings-and-information) present in the file, sorted by their proximity to the text cursor by default. The section header displays a tally of errors, warnings and informational messages separately. Can be paused by clicking the 'Pause 'All Messages'' button in the top right of the section. The sort order can be changed by clicking the 'Sort by message location' button, also in the top right of the section. The default sort order can be changed by setting the 'Lean 4 > Infoview: Message Order' option.
 
 All sections can be collapsed by clicking on their title using the mouse, but the expected type and all messages sections can also be collapsed and uncollapsed using the ['Infoview: Toggle Expected Type'](command:lean4.infoView.toggleExpectedType) and ['Infoview: Toggle "All Messages"'](command:lean4.displayList) commands, respectively. The expected type section can also be collapsed by default using the 'Lean 4: Infoview > Show Expected Type' setting. 
+
+Clicking on the 'Go to source location' button in the top right of any message in the InfoView will jump to the location in the code where the message was created.
 
 Using the 'Lean 4 > Infoview: Debounce Time' setting, the InfoView can be made to update more or less quickly as the text cursor is moved around.
 
@@ -275,19 +297,25 @@ Inaccessible names, i.e. names that have been automatically generated and cannot
 
 When a proof goal changes as the result of a tactic operation, the corresponding part of the proof state that changes is highlighted using red or green depending on whether this part of the proof state is about to be removed or was just inserted.
 
-In the top right of the tactic state and the expected type sections, there are three small icon buttons:
-1. **Copy state to comment**. Inserts a comment at the current text cursor position containing the tactic state or expected type. Can also be called using the ['Infoview: Copy Contents to Comment'](command:lean4.infoView.copyToComment) command.
-1. **Reverse list**. Displays the proof goal / expected type on top of the assumption list instead of at the bottom of it. The default behavior of this setting can be flipped using the 'Lean 4 > Infoview: Reverse Tactic State' setting.
-1. **Filter**. Displays a menu that allows hiding types, instance assumptions, inaccessible names and the values of `let` bindings from the proof goal state or expected type.
+In the top right of the tactic state and the expected type sections, there is a cog icon that provides settings for the given kind of state:
+1. **Display target before assumptions**. Displays the proof goal / expected type above the assumption list instead of at the bottom of it. The default of this setting can be flipped using the 'Lean 4 > Infoview: Reverse Tactic State' setting.
+1. **Hide type assumptions**. Removes types from the assumption list. The default of this setting can be flipped using the 'Lean 4 > Infoview: Hide Type Assumptions' setting.
+1. **Hide instance assumptions**. Removes instances from the assumption list. The default of this setting can be flipped using the 'Lean 4 > Infoview: Hide Instance Assumptions' setting.
+1. **Hide inaccessible assumptions**. Removes assumptions with inaccessible names from the assumption list. The default of this setting can be flipped using the 'Lean 4 > Infoview: Hide Inaccessible Assumptions' setting.
+1. **Hide let-values**. Removes the values of `let` expressions from the assumption list. The default of this setting can be flipped using the 'Lean 4 > Infoview: Hide Let Values' setting.
+1. **Hide goal names**. Removes the name of each goal in the proof goal / expected type. The default of this setting can be flipped using the 'Lean 4 > Infoview: Hide Goal Names' setting.
+1. **Emphasize first goal**. Renders side goals with a smaller font size. The default of this setting can be flipped using the 'Lean 4 > Infoview: Emphasize First Goal' setting.
+1. **Save current settings to default settings**. Clicking this button if any of the settings above differ from their defaults will persist the current settings to the VS Code user settings.
 
-When the 'Lean 4 > Infoview: Emphasize First Goal' setting is enabled, side goals will be rendered with a smaller font size.
+All settings can also be accessed using the InfoView context menu.
 
 #### Status bar
 
-In the very top right of the InfoView, there are three icon buttons:
-1. **Pin**. Takes the tactic state, expected type, messages and widget sections at the current cursor location and pins them to the top of the InfoView so that they are visible when inspecting the InfoView in other parts of the code. In pinned InfoView states, an additional **Reveal file location** icon button can be used to navigate to the place in the code where the InfoView state was pinned and the 'Pin' button is replaced with an 'Unpin' button. Can also be called using the ['Infoview: Toggle Pin'](command:lean4.infoView.toggleStickyPosition) command.
-1. **Pause updating**. Freezes the tactic state, expected type, messages and widget sections. When frozen, the 'Pause updating' button is replaced with a 'Continue updating' button. Can also be called using the ['Infoview: Toggle Updating'](command:lean4.infoView.toggleUpdating) command.
-1. **Update**. Re-fetches all InfoView data. It should typically not be necessary to use this button.
+In the very top right of the InfoView, there are two icon buttons:
+1. **Pin**. Takes the tactic state, expected type, messages and widget sections at the current cursor location and pins them to the top of the InfoView so that they are visible when inspecting the InfoView in other parts of the code. In pinned InfoView states, an additional **Go to pinned location in file** icon button can be used to navigate to the place in the code where the InfoView state was pinned and the 'Pin' button is replaced with an 'Unpin' button. Can also be called using the ['Infoview: Toggle Pin'](command:lean4.infoView.toggleStickyPosition) command.
+1. **Pause state**. Freezes the tactic state, expected type, messages and widget sections. Can also be called using the ['Infoview: Toggle Updating'](command:lean4.infoView.toggleUpdating) command. When frozen, the 'Pause state' button is replaced with a 'Unpause state' button and a 'Refresh paused state' button is also displayed. 
+
+All InfoView actions can also be accessed using the InfoView context menu.
 
 #### InfoView hovers
 
@@ -315,7 +343,7 @@ Right-clicking on any non-local identifier in the InfoView and selecting 'Go to 
 
 #### Widgets
 
-[User widgets](https://lean-lang.org/lean4/doc/examples/widgets.lean.html) allow for extending the InfoView with arbitrary interactive components. Widgets are typically registered to activate in certain contexts, for example when a tactic is called, and may provide additional functionality when holding `Shift` and clicking a subexpression in the InfoView to select it as an input to the widget.
+[User widgets](https://lean-lang.org/lean4/doc/examples/widgets.lean.html) allow for extending the InfoView with arbitrary interactive components. Widgets are typically registered to activate in certain contexts, for example when a tactic is called, and may provide additional functionality when holding `Shift` and clicking a subexpression in the InfoView to select it as an input to the widget, or by right-clicking on the subexpression and clicking the 'Select' entry.
 
 For an example of a built-in widget, calling the `simp?` tactic in a proof will display a 'Suggestions' section in the InfoView with a link that executes a [code action](#code-actions). The code action replaces the `simp?` tactic call with a `simp only` tactic invocation that lists all the theorems needed to simplify the expression.
 
@@ -335,6 +363,12 @@ Some of the colors in the InfoView can be themed with a custom color theme or by
 - `lean4.infoView.goalCount`: Number of goals
 - `lean4.infoView.turnstile`: Turnstile (⊢) that separates hypotheses from the goal
 - `lean4.infoView.caseLabel`: Case labels (e.g. `case zero`)
+
+#### Trace search
+
+When a diagnostic message in the InfoView contains trace output (e.g. output produced by `set_option trace.Meta.Tactic.simp true` or other trace options), the InfoView displays a search icon in the header of that message. Clicking the search icon opens a search field at the top of the message. Typing a query and pressing `Enter` will search through the trace tree and display only the trace nodes that contain matches, with the matching text highlighted. This can be helpful for finding relevant entries in large trace outputs.
+
+The search can be cleared by clicking the 'Collapse all' icon inside the search field. Clicking the search icon in the message header again will hide the search field entirely. The search can also be shown and hidden using the 'Show Search' and 'Hide Search' entries in the right-click context menu of a trace message.
 
 ### Hovers
 
@@ -359,15 +393,18 @@ Moving the mouse away from the hover popup panel will immediately collapse it. C
 
 Auto-completion is a mechanism that can be used to find identifiers that are available in the current context and to complete partial identifiers. The current context is determined by the current set of imports, as well as the set of available local declarations and variables. Auto-completion can always be triggered manually by using `Ctrl+Space` (`Option+Esc`) or the ['Trigger Suggest'](command:editor.action.triggerSuggest) command.
 
-There are three different kinds of auto-completion in Lean 4:
+There are several different kinds of auto-completion in Lean 4:
 1. **Dot completion**. When typing a dot after a namespace (`Namespace.`), after a term (`x.` or `(x + 1).`), after a pipe operator (`|>.`) or simply on its own (`.`), VS Code will display a complete list of identifiers that are available in the current context and that can be inserted after the dot. Specifically:
     - For namespaces, it will display all available sub-namespaces and identifiers that exist in the namespace (e.g. `Namespace.SubNamespace` or `Namespace.someFunction`).
     - For terms, it will display all available identifiers that exist in the namespace corresponding to the type of the term (e.g. `x.succ` for `x : Nat`).
     - On its own, it will display all available identifiers that exist in the namespace corresponding to the expected type at the position of the dot (e.g. `.zero` if the expected type is `Nat`).
-1. **Identifier completion**. When typing an identifier and pausing for a moment, VS Code will display all identifiers that are available in the current context and match the identifier that has been typed so far. In most contexts, it is necessary to type at least the first character of the identifier for identifier completion to offer any options. 
+1. **Identifier completion**. When typing an identifier and pausing for a moment, VS Code will display all identifiers that are available in the current context and match the identifier that has been typed so far. In most contexts, it is necessary to type at least the first character of the identifier for identifier completion to offer any options.
+1. **Tactic completion**. When pressing `Ctrl+Space` (`Option+Esc`) in whitespace within a tactic proof, VS Code will display all available tactics along with their documentation.
+1. **Structure field completion**. When pressing `Ctrl+Space` (`Option+Esc`) inside `{ }` for a structure instance, VS Code will display the full list of fields that can be set for the structure.
+1. **`end` name completion**. When typing an identifier after `end`, VS Code will display the available namespace and section names that can be closed.
 1. **Import completion**. When triggering auto-completion at the very start of the file where the imports are denoted by pressing `Ctrl+Space` or by typing the first characters of an `import` declaration, VS Code will display all files that can be imported. Since support for this feature by Lean's package manager [Lake](https://github.com/leanprover/lean4/blob/master/src/lake/README.md) is still pending, in some Lean projects it will also display some files that are outside of the current Lean project and cannot actually be imported.
 
-Next to the currently selected identifier in the completion menu, VS Code displays the type of the identifier and a small caret. Clicking this caret or hitting `Ctrl+Space` (`Option+Esc`) again will also display the documentation associated with the currently selected identifier.
+Next to the currently selected identifier in the completion menu, VS Code displays the type of the identifier and a small caret. Clicking this caret or hitting `Ctrl+Space` (`Option+Esc`) again will also display the documentation associated with the currently selected identifier. Deprecated declarations are shown with strikethrough text and include deprecation information in their documentation. Theorem completions are shown with a distinct icon to distinguish them from other kinds of declarations.
 
 By default, VS Code will auto-complete the selected identifier when `Enter` or `Tab` are pressed. Since `Enter` is also used to move the cursor to a new line, some users find this behavior to be irritating. This behavior can be disabled by setting the 'Accept Suggestion On Enter' configuration option to 'off'.
 
@@ -385,6 +422,8 @@ Code actions are a mechanism for Lean to suggest changes to the code. When a cod
 
 For example, the built-in `#guard_msgs` command can be used to test that a declaration produces a specific [diagnostic](#errors-warnings-and-information), e.g. `/-- info: 2 -/ #guard_msgs (info) in #eval 1` produces ```❌️ Docstring on `#guard_msgs` does not match generated message: info: 1```. When positioning the text cursor in the `#guard_msgs` line, a light bulb will pop up with an entry to replace the documentation above `#guard_msgs` with the actual output.
 
+Similarly, when Lean displays an 'unknown identifier' error, code actions are provided to add an import that makes the given identifier available or to change the identifier to a similarly-named one from the environment. A source action is also available to import modules for all unambiguous unknown identifiers in the file at once.
+
 The [Batteries](https://github.com/leanprover-community/batteries) library also provides some additional useful code actions, for example:
 - Typing `instance : <class> := _` will offer to generate a skeleton to implement an instance for `<class>`.
 - Typing `def f : <type1> → <type2> := _` will offer to generate a match on the value of `<type1>`.
@@ -395,6 +434,24 @@ The [Batteries](https://github.com/leanprover-community/batteries) library also 
 | ![](images/code-action.png) | 
 | :--: | 
 | *Code action for `#guard_msgs` command* |
+
+### Signature help
+
+When typing a function application, VS Code will automatically display a popup that designates the current remaining function type. This removes the need to remember the function signature while typing the function application, or having to constantly cycle between hovering over the function identifier and typing the application. 
+
+The signature help can be triggered by pressing `Ctrl+Shift+Space` (`Cmd+Shift+Space`) or by using the ['Trigger Parameter Hints'](command:editor.action.triggerParameterHints) command.
+
+### Inlay hints
+
+Inlay hints are a mechanism for Lean to display greyed-out code snippets directly in the code to make some implicit information explicit. Lean will display inlay hints for implicit parameters that have been automatically inserted to make it more clear that these parameters have been added.
+
+Hovering over an inlay hint for automatically-inserted implicit parameters will display a tooltip with the types of the parameters. Double-clicking the inlay hint will insert the greyed out snippet into the code.
+
+<br/>
+
+| ![](images/auto-implicit-inlay-hint.png) | 
+| :--: | 
+| *Inlay hint for automatically-inserted implicit parameter `α`* |
 
 ### Occurrence highlighting
 
@@ -490,11 +547,11 @@ This section covers several essential tools to efficiently navigate Lean project
 
 ### Go to definition, declaration and type definition
 
-To jump to the place in the code where an identifier was defined, the ['Go to Definition'](command:editor.action.revealDefinition) command can be used by positioning the text cursor on the identifier and pressing `F12`, by right clicking on the identifier and selecting 'Go to Definition' or by holding `Shift` and clicking on the identifier. 
+To jump to the place in the code where an identifier was defined, the ['Go to Definition'](command:editor.action.revealDefinition) command can be used by positioning the text cursor on the identifier and pressing `F12`, by right clicking on the identifier and selecting 'Go to Definition' or by holding `Shift` and clicking on the identifier. When used on a type class projection or on a macro that produces a type class projection, 'Go to Definition' will provide several alternatives for both the type class itself, as well as its involved instances. For reducible definitions, 'Go to Definition' will also look through them to find the underlying declaration. 'Go to Definition' also works on `import` statements, jumping to the imported file.
 
-The ['Go to Declaration'](command:editor.action.revealDeclaration) command that can be used via the context menu is currently mostly identical to 'Go to Definition', with the only significant difference being that when 'Go to Definition' jumps to the elaborator of an identifier, 'Go to Declaration' will instead jump to the parser.
+The ['Go to Declaration'](command:editor.action.revealDeclaration) command that can be used via the context menu yields all alternatives provided by 'Go to Definition' in addition to the parser and elaborator of the given symbol.
 
-The ['Go to Type Definition'](command:editor.action.goToTypeDefinition) command that can be used via the context menu jumps to the type of the identifier at the cursor position.
+The ['Go to Type Definition'](command:editor.action.goToTypeDefinition) command that can be used via the context menu jumps to the type of the identifier at the cursor position. For identifiers with compound types, it will show all constituent type constants.
 
 <br/>
 
@@ -569,6 +626,24 @@ By clicking on the third icon button in the top right of the search view that co
 | :--: | 
 | *Search view with enabled hierarchical tree display option* |
 
+### Module hierarchy
+
+In a Lean file, pressing `Alt+Shift+M` to execute the ['Module Hierarchy: Show Imports'](command:lean4.leanModuleHierarchy.showModuleHierarchy) command will display a tree with the Lean module for the current file at its root and its imports as children of the root. The full import tree can be navigated using this view. Pressing `Alt+Shift+N` to execute the ['Module Hierarchy: Show Inverse Module Hierarchy'](command:lean4.leanModuleHierarchy.showInverseModuleHierarchy) will instead display a tree with the Lean module for the current file at its root and all files where it is imported as children of the root. The full inverted import tree can be navigated using this view.
+
+For Lean modules that use the `module` keyword, the module hierarchy will also display the various import modifiers that can be used together with the `module` keyword.
+
+Clicking the 'Show Imports' or 'Show Imported By' buttons in the top right of the module hierarchy view will switch between the regular and the inverse module hierarchy. The state of the displayed hierarchy can be refreshed using the 'Refresh' icon and the entire tree can be collapsed using the 'Collapse All' icon.
+
+<br/>
+
+| ![](images/module-hierarchy.png) | 
+| :--: | 
+| *Module hierarchy showing the imports of a module `Main`* |
+
+### Copy module name
+
+The ['Copy Module Name'](command:lean4.copyModuleName) command copies the Lean module name of the current file to the clipboard. For example, a file at `Mathlib/Tactic/Ring.lean` would yield `Mathlib.Tactic.Ring`. This command is available in the [command palette](#command-palette) and in the right-click context menu of editor tabs for Lean files.
+
 ### Go to file
 
 Using the ['Go to File'](command:workbench.action.quickOpen) command by pressing `Ctrl+P` (`Cmd+P`) brings up a search prompt that allows for typing in a file name to open and focus. It can be used to quickly navigate files using the keyboard.
@@ -620,7 +695,9 @@ The Lean 4 VS Code extension supports the following commands that can be run in 
 1. **['Project: Clean Project'](command:lean4.project.clean)**. Removes all build artifacts for the Lean project. If the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it, it will also offer to download and install the current Mathlib build artifact cache after cleaning the project.
 1. **['Project: Update Dependency…'](command:lean4.project.updateDependency)**. Displays a list of all dependencies that can be updated. After selecting a dependency and updating it, if the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it, it will also download and install the current Mathlib build artifact cache. At the end, if the Lean version of the updated project differs from the Lean version of the project, the command will offer to update the Lean version of the project to that of the updated dependency.
 1. **['Project: Fetch Mathlib Build Cache'](command:lean4.project.fetchCache)**. Downloads and installs the current Mathlib build artifact cache if the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it.
-1. **['Project: Fetch Mathlib Build Cache For Current Imports'](command:lean4.project.fetchFileCache)**. Downloads and installs the current Mathlib build artifact for the focused file and all of its imports if the project is [Mathlib](https://github.com/leanprover-community/mathlib4).
+1. **['Project: Fetch Mathlib Build Cache For Open Files'](command:lean4.project.fetchOpenFileCaches)**. Downloads and installs the current Mathlib build artifacts for selected open files and all of their imports if the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it.
+1. **['Project: Fetch Mathlib Build Cache For All Open Files'](command:lean4.project.fetchAllOpenFileCaches)**. Downloads and installs the current Mathlib build artifacts for all open files and all of their imports if the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it.
+1. **['Project: Fetch Mathlib Build Cache For Current File'](command:lean4.project.fetchFileCache)**. Downloads and installs the current Mathlib build artifacts for the current file and all of its imports if the project is [Mathlib](https://github.com/leanprover-community/mathlib4) or depends on it.
 1. **['Project: Select Project Lean Version…'](command:lean4.project.selectProjectToolchain)**. Displays a list of all available Lean versions. After selecting a Lean version, the command writes the selected Lean version to the `lean-toolchain` file of the given project.
 
 <br/>
@@ -634,6 +711,10 @@ The Lean 4 VS Code extension supports the following commands that can be run in 
 | ![](images/select-project-lean-version.png) | 
 | :--: | 
 | *'Project: Select Project Lean Version…' selection dialog* |
+
+### Lakefile editing
+
+When editing a `lakefile.toml` file, the Lean 4 VS Code extension provides schema validation, auto-completion and hover documentation for all Lake package configuration options. This is powered by the [Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml) extension, which is automatically installed as a dependency of the Lean 4 VS Code extension.
 
 ### Terminal
 
@@ -732,6 +813,7 @@ The Lean 4 VS Code extension checks that the user's Lean setup is well-founded b
   1. Whether [Curl](https://curl.se/) and [Git](https://git-scm.com/) are installed (Error)
   1. Whether some version of Lean can be found (Error)
   1. Whether Lean's version manager [Elan](https://github.com/leanprover/elan/blob/master/README.md) is installed and reasonably up-to-date (Warning)
+  1. Whether the operating system version is recent enough to run current Lean versions (Warning)
   1. Whether VS Code is sufficiently up-to-date to auto-update the Lean 4 VS Code extension to the next version (Warning)
 * Project-level diagnostics are checked whenever the first Lean file of a project is opened. If there is an error-level setup issue, Lean will not launch for that project, but all of the other Lean-specific extension features will be active, provided that the global-level diagnostics did not yield an error. The following project-level aspects of the user's setup are checked:
   1. Whether Lean is being ran in an untitled file that has not been saved to the file system (Warning)

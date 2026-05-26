@@ -1,7 +1,6 @@
-import { ChildProcessWithoutNullStreams, spawn } from 'child_process'
+import { ChildProcessWithoutNullStreams } from 'child_process'
 import { OutputChannel, Progress, ProgressLocation, ProgressOptions, window } from 'vscode'
-import { logger } from './logger'
-import { displayNotificationWithOutput } from './notifs'
+import { displayModalNotificationWithOutput, displayNotificationWithOutput } from './notifs'
 
 export interface ExecutionChannel {
     combined?: OutputChannel | undefined
@@ -48,102 +47,9 @@ export function batchExecuteWithProc(
     workingDirectory?: string | undefined,
     channel?: ExecutionChannel | undefined,
     envExtensions?: { [key: string]: string } | undefined,
+    shell?: 'Unix' | 'Windows' | undefined,
 ): [ChildProcessWithoutNullStreams | 'CannotLaunch', Promise<ExecutionResult>] {
-    return ["CannotLaunch", new Promise(() => {})]
-    /*
-    let stdout: string = ''
-    let stderr: string = ''
-    let combined: string = ''
-    let options = {}
-    if (workingDirectory !== undefined) {
-        options = { cwd: workingDirectory }
-    }
-    if (envExtensions !== undefined) {
-        const env = Object.assign({}, process.env)
-        for (const [key, value] of Object.entries(envExtensions)) {
-            env[key] = value
-        }
-        options = { ...options, env }
-    }
-    if (channel?.combined) {
-        channel.combined.appendLine(formatCommandExecutionOutput(workingDirectory, executablePath, args))
-    }
-
-    let proc: ChildProcessWithoutNullStreams
-    try {
-        proc = spawn(executablePath, args, options)
-    } catch (e) {
-        return ['CannotLaunch', new Promise(resolve => resolve(createCannotLaunchExecutionResult('')))]
-    }
-
-    const execPromise: Promise<ExecutionResult> = new Promise(resolve => {
-        const conclude = (r: ExecutionResult) =>
-            resolve({
-                exitCode: r.exitCode,
-                stdout: r.stdout.trim(),
-                stderr: r.stderr.trim(),
-                combined: r.combined.trim(),
-            })
-
-        proc.on('error', err => {
-            conclude(createCannotLaunchExecutionResult(err.message))
-        })
-
-        proc.stdout.on('data', line => {
-            const s: string = line.toString()
-            if (channel?.combined) channel.combined.appendLine(s)
-            if (channel?.stdout) channel.stdout.appendLine(s)
-            stdout += s + '\n'
-            combined += s + '\n'
-        })
-
-        proc.stderr.on('data', line => {
-            const s: string = line.toString()
-            if (channel?.combined) channel.combined.appendLine(s)
-            if (channel?.stderr) channel.stderr.appendLine(s)
-            stderr += s + '\n'
-            combined += s + '\n'
-        })
-
-        proc.on('close', (code, signal) => {
-            logger.log(`child process exited with code ${code}`)
-            if (signal === 'SIGTERM') {
-                if (channel?.combined) {
-                    channel.combined.appendLine('=> Operation cancelled by user.')
-                }
-                conclude({
-                    exitCode: ExecutionExitCode.Cancelled,
-                    stdout,
-                    stderr,
-                    combined,
-                })
-                return
-            }
-            if (code !== 0) {
-                if (channel?.combined) {
-                    const formattedCode = code ? `Exit code: ${code}.` : ''
-                    const formattedSignal = signal ? `Signal: ${signal}.` : ''
-                    channel.combined.appendLine(`=> Operation failed. ${formattedCode} ${formattedSignal}`.trim())
-                }
-                conclude({
-                    exitCode: ExecutionExitCode.ExecutionError,
-                    stdout,
-                    stderr,
-                    combined,
-                })
-                return
-            }
-            conclude({
-                exitCode: ExecutionExitCode.Success,
-                stdout,
-                stderr,
-                combined,
-            })
-        })
-    })
-
-    return [proc, execPromise]
-    */
+    return ['CannotLaunch', new Promise(() => {})]
 }
 
 export async function batchExecute(
@@ -152,8 +58,9 @@ export async function batchExecute(
     workingDirectory?: string | undefined,
     channel?: ExecutionChannel | undefined,
     envExtensions?: { [key: string]: string } | undefined,
+    shell?: 'Unix' | 'Windows' | undefined,
 ): Promise<ExecutionResult> {
-    const [_, execPromise] = batchExecuteWithProc(executablePath, args, workingDirectory, channel, envExtensions)
+    const [_, execPromise] = batchExecuteWithProc(executablePath, args, workingDirectory, channel, envExtensions, shell)
     return execPromise
 }
 
@@ -162,6 +69,7 @@ export interface ProgressExecutionOptions {
     channel?: OutputChannel | undefined
     translator?: ((line: string) => string | undefined) | undefined
     envExtensions?: { [key: string]: string } | undefined
+    shell?: 'Unix' | 'Windows' | undefined
     allowCancellation?: boolean
 }
 
@@ -224,7 +132,7 @@ export async function batchExecuteWithProgress(
     }
 
     const expensiveExecutionTimeoutPromise: Promise<ExecutionResult | undefined> = new Promise((resolve, _) =>
-        setTimeout(() => resolve(undefined), 250),
+        setTimeout(() => resolve(undefined), 500),
     )
     const [proc, executionPromise] = batchExecuteWithProc(
         executablePath,
@@ -234,6 +142,7 @@ export async function batchExecuteWithProgress(
             combined: progressChannel,
         },
         options.envExtensions,
+        options.shell,
     )
     if (proc === 'CannotLaunch') {
         return executionPromise // resolves to a 'CannotLaunch' ExecutionResult
@@ -244,7 +153,7 @@ export async function batchExecuteWithProgress(
         return preliminaryResult
     }
 
-    // Execution already took longer than 250ms, let's start displaying a progress bar now
+    // Execution already took longer than 500ms, let's start displaying a progress bar now
     const result: ExecutionResult = await window.withProgress(progressOptions, (p, token) => {
         progress = p
         token.onCancellationRequested(() => proc.kill())
@@ -276,13 +185,36 @@ export function displayResultError(result: ExecutionResult, message: string) {
     if (result.exitCode === ExecutionExitCode.Success) {
         throw Error()
     }
-    const errorMessage: string = formatErrorMessage(result, message)
+    displayOutputError(result.combined, message)
+}
+
+export async function displayModalResultError(result: ExecutionResult, message: string) {
+    if (result.exitCode === ExecutionExitCode.Success) {
+        throw Error()
+    }
+    await displayModalOutputError(result.combined, message)
+}
+
+export function displayOutputError(output: string, message: string) {
+    const errorMessage: string = formatErrorMessage(output, message)
     displayNotificationWithOutput('Error', errorMessage)
 }
 
-function formatErrorMessage(error: ExecutionResult, message: string): string {
-    if (error.combined === '') {
+export async function displayModalOutputError(output: string, message: string) {
+    const errorMessage: string = formatModalErrorMessage(output, message)
+    await displayModalNotificationWithOutput('Error', errorMessage)
+}
+
+function formatErrorMessage(output: string, message: string): string {
+    if (output === '') {
         return `${message}`
     }
-    return `${message} Command output: ${error.combined}`
+    return `${message} Command output: ${output}`
+}
+
+function formatModalErrorMessage(output: string, message: string): string {
+    if (output === '') {
+        return `${message}`
+    }
+    return `${message}\n\n---\n\nOutput of command that failed: ${output}`
 }

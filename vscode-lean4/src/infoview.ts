@@ -1,6 +1,4 @@
 import {
-    EditorApi,
-    InfoviewApi,
     InfoviewConfig,
     LeanFileProgressParams,
     RpcConnected,
@@ -10,27 +8,25 @@ import {
     ServerStoppedReason,
     TextInsertKind,
 } from '@leanprover/infoview-api'
-import { join } from 'path'
 import {
+    CancellationTokenSource,
     commands,
     ConfigurationTarget,
     Diagnostic,
     Disposable,
     env,
     ExtensionContext,
-    Event,
     Position,
     Range,
     Selection,
     TextEditor,
     TextEditorRevealType,
     Uri,
-    ViewColumn,
-    WebviewPanel,
     window,
     workspace,
 } from 'vscode'
 import * as ls from 'vscode-languageserver-protocol'
+import { IFrameInfoWebview, IFrameInfoWebviewFactory } from '../../../infowebview'
 import {
     getEditorLineHeight,
     getInfoViewAllErrorsOnLine,
@@ -43,6 +39,7 @@ import {
     getInfoViewHideInstanceAssumptions,
     getInfoViewHideLetValues,
     getInfoViewHideTypeAssumptions,
+    getInfoViewMessageOrder,
     getInfoViewReverseTacticState,
     getInfoViewShowGoalNames,
     getInfoViewShowTooltipOnHover,
@@ -51,15 +48,14 @@ import {
     prodOrDev,
 } from './config'
 import { LeanClient } from './leanclient'
-import { Rpc } from './rpc'
+import { EditorRpcApi } from './rpc'
 import { LeanClientProvider } from './utils/clientProvider'
 import { c2pConverter, LeanPublishDiagnosticsParams, p2cConverter } from './utils/converters'
 import { ExtUri, parseExtUri, toExtUri } from './utils/exturi'
 import { lean, LeanEditor } from './utils/leanEditorProvider'
 import { logger } from './utils/logger'
 import { displayNotification } from './utils/notifs'
-import { viewColumnOfActiveTextEditor, viewColumnOfInfoView } from './utils/viewColumn'
-import { IFrameInfoWebview, IFrameInfoWebviewFactory } from '../../../infowebview'
+import { viewColumnOfActiveTextEditor } from './utils/viewColumn'
 
 const keepAlivePeriodMs = 10000
 
@@ -99,8 +95,8 @@ export class RpcSessionAtPos implements Disposable {
 export class InfoProvider implements Disposable {
     /** Instance of the panel, if it is open. Otherwise `undefined`. */
     private webviewPanel?: IFrameInfoWebview
+    /** The InfoProvider's subscriptions, to be cleaned up when it is disposed. */
     private subscriptions: Disposable[] = []
-    private clientSubscriptions: Disposable[] = []
 
     private stylesheet: string = ''
     private autoOpened: boolean = false
@@ -116,6 +112,16 @@ export class InfoProvider implements Disposable {
 
     // the key is the uri of the file who's worker has failed.
     private workersFailed: Map<string, ServerStoppedReason> = new Map()
+
+    /**
+     * The ID to assign to the next client request made by the infoview
+     * (see {@link editorApi.startClientRequest}).
+     * Only used for cancellation. Unrelated to LSP request IDs. */
+    private freshClientRequestId: number = 0
+    /**
+     * Maps in-flight client request IDs (as in {@link freshClientRequestId})
+     * to tuples [Response, Infoview subscription (should be disposed when infoview closes), Cancellation token]. */
+    private clientRequests: Map<number, [Promise<any>, Disposable, CancellationTokenSource]> = new Map()
 
     private subscribeDidChangeNotification(client: LeanClient, method: string) {
         const h = client.didChange(params => {
@@ -146,7 +152,7 @@ export class InfoProvider implements Disposable {
         return h
     }
 
-    private editorApi: EditorApi = {
+    private editorApi: EditorRpcApi = {
         saveConfig: async (config: InfoviewConfig) => {
             await workspace
                 .getConfiguration('lean4.infoview')
@@ -184,8 +190,11 @@ export class InfoProvider implements Disposable {
             await workspace
                 .getConfiguration('lean4.infoview')
                 .update('showTooltipOnHover', config.showTooltipOnHover, ConfigurationTarget.Global)
+            await workspace
+                .getConfiguration('lean4.infoview')
+                .update('messageOrder', config.messageOrder, ConfigurationTarget.Global)
         },
-        sendClientRequest: async (uri: string, method: string, params: any): Promise<any> => {
+        startClientRequest: async (uri: string, method: string, params: any): Promise<number> => {
             const extUri = parseExtUri(uri)
             if (extUri === undefined) {
                 throw Error(`Unexpected URI scheme: ${Uri.parse(uri).scheme}`)
@@ -193,10 +202,15 @@ export class InfoProvider implements Disposable {
 
             const client = this.clientProvider.findClient(extUri)
             if (client) {
-                try {
-                    const result = await client.sendRequest(method, params)
-                    return result
-                } catch (ex) {
+                const tk = new CancellationTokenSource()
+                const sub: Disposable = {
+                    dispose() {
+                        tk.cancel()
+                    },
+                }
+                const id = this.freshClientRequestId
+                this.freshClientRequestId += 1
+                const promise = client.sendRequest(method, params, tk.token).catch(async ex => {
                     if (ex.code === RpcErrorCode.WorkerCrashed) {
                         // ex codes related with worker exited or crashed
                         logger.log(`[InfoProvider]The Lean Server has stopped processing this file: ${ex.message}`)
@@ -206,9 +220,33 @@ export class InfoProvider implements Disposable {
                         })
                     }
                     throw ex
-                }
+                })
+                this.clientRequests.set(id, [promise, sub, tk])
+                return id
             }
             throw Error('No active Lean client.')
+        },
+        awaitClientRequest: async (id: number): Promise<any> => {
+            const p = this.clientRequests.get(id)
+            if (p) {
+                // NOTE: `await` finishes first (or throws),
+                // then the entry is deleted,
+                // and then the function returns.
+                try {
+                    return await p[0]
+                } finally {
+                    this.clientRequests.delete(id)
+                }
+            }
+            // NOTE: we rely on details of `editorApiOfRpc` for correctness:
+            // we assume that `awaitClientRequest` is called exactly once
+            // regardless of whether cancellation occurs,
+            // so this error should never be thrown.
+            throw Error(`Internal error: invalid client request ID '${id}'`)
+        },
+        cancelClientRequest: async (id: number): Promise<void> => {
+            const p = this.clientRequests.get(id)
+            if (p) p[2].cancel()
         },
         sendClientNotification: async (uri: string, method: string, params: any): Promise<void> => {
             const extUri = parseExtUri(uri)
@@ -318,6 +356,22 @@ export class InfoProvider implements Disposable {
         },
         applyEdit: async (e: ls.WorkspaceEdit) => {
             const we = await p2cConverter.asWorkspaceEdit(e)
+
+            const edits = we.entries()
+            if (edits.length !== 1) {
+                return
+            }
+            const [uri, _] = edits[0]
+            const extUri = toExtUri(uri)
+            if (extUri === undefined) {
+                return
+            }
+            const leanEditor = lean.getVisibleLeanEditorsByUri(extUri).at(0)
+            if (leanEditor === undefined) {
+                return
+            }
+            await window.showTextDocument(leanEditor.editor.document, leanEditor.editor.viewColumn, false)
+
             await workspace.applyEdit(we)
         },
         showDocument: async show => {
@@ -370,19 +424,16 @@ export class InfoProvider implements Disposable {
     ) {
         this.updateStylesheet()
 
-        clientProvider.clientAdded(client => {
-            void this.onClientAdded(client)
-        })
-
-        clientProvider.clientRemoved(client => {
-            void this.onClientRemoved(client)
-        })
-
-        clientProvider.clientStopped(([client, activeClient, reason]) => {
-            void this.onActiveClientStopped(client, activeClient, reason)
-        })
-
         this.subscriptions.push(
+            clientProvider.clientAdded(client => {
+                void this.onClientAdded(client)
+            }),
+            clientProvider.clientRemoved(client => {
+                void this.onClientRemoved(client)
+            }),
+            clientProvider.clientStopped(([client, activeClient, reason]) => {
+                void this.onActiveClientStopped(client, activeClient, reason)
+            }),
             lean.onDidChangeActiveLeanEditor(() => this.sendPosition()),
             lean.onDidChangeLeanEditorSelection(() => this.sendPosition()),
             workspace.onDidChangeConfiguration(async _e => {
@@ -390,9 +441,7 @@ export class InfoProvider implements Disposable {
                 this.updateStylesheet()
                 await this.sendConfig()
             }),
-            workspace.onDidChangeTextDocument(async () => {
-                await this.sendPosition()
-            }),
+            lean.onDidChangeLeanDocument(() => this.sendPosition()),
             lean.registerLeanEditorCommand('lean4.displayGoal', leanEditor => this.openPreview(leanEditor)),
             commands.registerCommand('lean4.toggleInfoview', () => this.toggleInfoview()),
             lean.registerLeanEditorCommand('lean4.displayList', async leanEditor => {
@@ -450,6 +499,18 @@ export class InfoProvider implements Disposable {
                     id: args.unpauseAllMessagesId,
                 }),
             ),
+            commands.registerCommand('lean4.infoview.copyState', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'copyState',
+                    id: args.copyStateId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.copyMessage', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'copyMessage',
+                    id: args.copyMessageId,
+                }),
+            ),
             commands.registerCommand('lean4.infoview.goToPinnedLocation', args =>
                 this.webviewPanel?.api.clickedContextMenu({
                     entry: 'goToPinnedLocation',
@@ -460,6 +521,18 @@ export class InfoProvider implements Disposable {
                 this.webviewPanel?.api.clickedContextMenu({
                     entry: 'goToMessageLocation',
                     id: args.goToMessageLocationId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.hideTraceSearch', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'hideTraceSearch',
+                    id: args.hideTraceSearchId,
+                }),
+            ),
+            commands.registerCommand('lean4.infoview.showTraceSearch', args =>
+                this.webviewPanel?.api.clickedContextMenu({
+                    entry: 'showTraceSearch',
+                    id: args.showTraceSearchId,
                 }),
             ),
             commands.registerCommand('lean4.infoview.displayTargetBeforeAssumptions', args =>
@@ -583,7 +656,7 @@ export class InfoProvider implements Disposable {
     private async onClientAdded(client: LeanClient) {
         logger.log(`[InfoProvider] Adding client for workspace: ${client.getClientFolder()}`)
 
-        this.clientSubscriptions.push(
+        this.subscriptions.push(
             client.restarted(async () => {
                 logger.log('[InfoProvider] got client restarted event')
                 // This event is triggered both the first time the server starts
@@ -632,7 +705,7 @@ export class InfoProvider implements Disposable {
     }
 
     onClientRemoved(client: LeanClient) {
-        // todo: remove subscriptions for this client...
+        // NOTE: we could index subscriptions made in `onClientAdded` by the client, and remove here
     }
 
     async onActiveClientStopped(client: LeanClient, activeClient: boolean, reason: ServerStoppedReason) {
@@ -655,17 +728,11 @@ export class InfoProvider implements Disposable {
         client.showRestartMessage()
     }
 
+    // Called when the extension is deactivated.
     dispose(): void {
-        // active client is changing.
-        this.clearNotificationHandlers()
-        this.clearRpcSessions(null)
+        // Calls `webviewPanel.onDidDispose` to cleanup the infoview's subscriptions.
         this.webviewPanel?.dispose()
-        for (const s of this.clientSubscriptions) {
-            s.dispose()
-        }
-        for (const s of this.subscriptions) {
-            s.dispose()
-        }
+        for (const s of this.subscriptions) s.dispose()
     }
 
     isOpen(): boolean {
@@ -749,7 +816,7 @@ export class InfoProvider implements Disposable {
         } else {
             displayNotification(
                 'Error',
-                'No active Lean editor tab. Make sure to focus the Lean editor tab for which you want to open the infoview.',
+                'No active Lean editor tab. Make sure to focus the Lean editor tab for which you wish to open the infoview.',
             )
         }
     }
@@ -759,47 +826,12 @@ export class InfoProvider implements Disposable {
             this.webviewPanel.reveal(undefined, true)
         } else {
             const webviewPanel = this.infoWebviewFactory.make(this.editorApi, this.stylesheet)
-            /*
-            window.createWebviewPanel(
-                'lean4_infoview',
-                'Lean InfoView',
-                { viewColumn: viewColumnOfInfoView(), preserveFocus: true },
-                {
-                    enableFindWidget: true,
-                    retainContextWhenHidden: true,
-                    enableScripts: true,
-                    enableCommandUris: true,
-                },
-            ) as WebviewPanel & { rpc: Rpc; api: InfoviewApi }
-
-            // Note that an extension can send data to its webviews using webview.postMessage().
-            // This method sends any JSON serializable data to the webview. The message is received
-            // inside the webview through the standard message event.
-            // The receiving of these messages is done inside webview\index.ts where it
-            // calls window.addEventListener('message',...
-            webviewPanel.rpc = new Rpc(m => {
-                try {
-                    void webviewPanel.webview.postMessage(m)
-                } catch (e) {
-                    // ignore any disposed object exceptions
-                }
-            })
-            webviewPanel.rpc.register(this.editorApi)
-
-            // Similarly, we can received data from the webview by listening to onDidReceiveMessage.
-            webviewPanel.webview.onDidReceiveMessage(m => {
-                try {
-                    webviewPanel.rpc.messageReceived(m)
-                } catch {
-                    // ignore any disposed object exceptions
-                }
-            })
-            webviewPanel.api = webviewPanel.rpc.getApi()
-            */
             webviewPanel.onDidDispose(() => {
                 this.webviewPanel = undefined
                 this.clearNotificationHandlers()
                 this.clearRpcSessions(null) // should be after `webviewPanel = undefined`
+                for (const [_1, d, _2] of this.clientRequests.values()) d.dispose()
+                this.clientRequests = new Map()
             })
             this.webviewPanel = webviewPanel
 
@@ -848,6 +880,7 @@ export class InfoProvider implements Disposable {
             hideInaccessibleAssumptions: getInfoViewHideInaccessibleAssumptions(),
             hideLetValues: getInfoViewHideLetValues(),
             showTooltipOnHover: getInfoViewShowTooltipOnHover(),
+            messageOrder: getInfoViewMessageOrder(),
         })
     }
 
@@ -882,7 +915,7 @@ export class InfoProvider implements Disposable {
                 },
                 processing,
             }
-            await this.webviewPanel.api.gotServerNotification('$/lean/fileProgress', params)
+            await this.webviewPanel?.api.gotServerNotification('$/lean/fileProgress', params)
         }
     }
 
@@ -1003,9 +1036,6 @@ export class InfoProvider implements Disposable {
     }
 
     private getLocalPath(path: string): string | undefined {
-        if (this.webviewPanel) {
-            // return this.webviewPanel.webview.asWebviewUri(Uri.file(join(this.context.extensionPath, path))).toString()
-        }
         return undefined
     }
 

@@ -8,9 +8,10 @@ import {
     ExecutionExitCode,
     ExecutionResult,
 } from './utils/batch'
+import { DepInstaller } from './utils/depInstaller'
 import { elanStableChannel } from './utils/elan'
 import { ExtUri, extUriToCwdUri, FileUri } from './utils/exturi'
-import { lake } from './utils/lake'
+import { displayLakeRunnerError, FetchMathlibCacheResult, lake, LakeRunnerResult } from './utils/lake'
 import { LeanInstaller } from './utils/leanInstaller'
 import { displayNotification, displayNotificationWithInput } from './utils/notifs'
 import { checkParentFoldersForLeanProject, isValidLeanProject } from './utils/projectInfo'
@@ -21,17 +22,18 @@ const projectInitNotificationOptions: SetupNotificationOptions = {
 }
 
 async function checkCreateLean4ProjectPreconditions(
-    installer: LeanInstaller,
+    leanInstaller: LeanInstaller,
+    depInstaller: DepInstaller,
     context: string,
     folderUri: ExtUri,
     projectToolchain: string,
 ): Promise<PreconditionCheckResult> {
-    const channel = installer.getOutputChannel()
+    const channel = leanInstaller.getOutputChannel()
     const cwdUri = extUriToCwdUri(folderUri)
     const d = new SetupDiagnostics(projectInitNotificationOptions)
     return await checkAll(
-        () => d.checkAreDependenciesInstalled(channel, cwdUri),
-        () => d.checkIsElanUpToDate(installer, cwdUri, { elanMustBeInstalled: true }),
+        () => d.checkAreDependenciesInstalled(depInstaller, channel, cwdUri),
+        () => d.checkIsElanUpToDate(leanInstaller, cwdUri, { elanMustBeInstalled: true }),
         () =>
             d.checkIsLeanVersionUpToDate(channel, context, folderUri, {
                 toolchainUpdateMode: 'UpdateAutomatically',
@@ -45,9 +47,13 @@ async function checkCreateLean4ProjectPreconditions(
     )
 }
 
-async function checkPreCloneLean4ProjectPreconditions(channel: OutputChannel, cwdUri: FileUri | undefined) {
+async function checkPreCloneLean4ProjectPreconditions(
+    depInstaller: DepInstaller,
+    channel: OutputChannel,
+    cwdUri: FileUri | undefined,
+) {
     const d = new SetupDiagnostics(projectInitNotificationOptions)
-    return await checkAll(() => d.checkAreDependenciesInstalled(channel, cwdUri))
+    return await checkAll(() => d.checkAreDependenciesInstalled(depInstaller, channel, cwdUri))
 }
 
 async function checkPostCloneLean4ProjectPreconditions(installer: LeanInstaller, context: string, folderUri: ExtUri) {
@@ -69,7 +75,8 @@ export class ProjectInitializationProvider implements Disposable {
 
     constructor(
         private channel: OutputChannel,
-        private installer: LeanInstaller,
+        private leanInstaller: LeanInstaller,
+        private depInstaller: DepInstaller,
     ) {
         this.subscriptions.push(
             commands.registerCommand('lean4.project.createStandaloneProject', () => this.createStandaloneProject()),
@@ -91,18 +98,18 @@ export class ProjectInitializationProvider implements Disposable {
             return
         }
 
-        const buildResult: ExecutionResult = await lake({
+        const buildResult: LakeRunnerResult = await lake({
             channel: this.channel,
             cwdUri: projectFolder,
             context: createStandaloneProjectContext,
             toolchain,
             toolchainUpdateMode: 'UpdateAutomatically',
         }).build()
-        if (buildResult.exitCode === ExecutionExitCode.Cancelled) {
+        if (buildResult.kind === 'Cancelled') {
             return
         }
-        if (buildResult.exitCode !== ExecutionExitCode.Success) {
-            displayResultError(buildResult, 'Cannot build Lean project.')
+        if (buildResult.kind !== 'Success') {
+            displayLakeRunnerError(buildResult, 'Cannot build Lean project.')
             return
         }
 
@@ -127,33 +134,40 @@ export class ProjectInitializationProvider implements Disposable {
             return
         }
 
-        const cacheGetResult: ExecutionResult = await lake({
+        const cacheGetResult: FetchMathlibCacheResult = await lake({
             channel: this.channel,
             cwdUri: projectFolder,
             context: createMathlibProjectContext,
             toolchain: mathlibToolchain,
             toolchainUpdateMode: 'UpdateAutomatically',
         }).fetchMathlibCache()
-        if (cacheGetResult.exitCode === ExecutionExitCode.Cancelled) {
+        if (cacheGetResult.kind === 'Cancelled') {
             return
         }
-        if (cacheGetResult.exitCode !== ExecutionExitCode.Success) {
-            displayResultError(cacheGetResult, 'Cannot fetch Mathlib build artifact cache.')
+        if (cacheGetResult.kind === 'CacheUnavailable') {
+            displayNotification(
+                'Error',
+                'Cannot fetch Mathlib build artifact cache: `lake exe cache` is not available.',
+            )
+            return
+        }
+        if (cacheGetResult.kind !== 'Success') {
+            displayLakeRunnerError(cacheGetResult, 'Cannot fetch Mathlib build artifact cache.')
             return
         }
 
-        const buildResult: ExecutionResult = await lake({
+        const buildResult: LakeRunnerResult = await lake({
             channel: this.channel,
             cwdUri: projectFolder,
             context: createMathlibProjectContext,
             toolchain: mathlibToolchain,
             toolchainUpdateMode: 'UpdateAutomatically',
         }).build()
-        if (buildResult.exitCode === ExecutionExitCode.Cancelled) {
+        if (buildResult.kind === 'Cancelled') {
             return
         }
-        if (buildResult.exitCode !== ExecutionExitCode.Success) {
-            displayResultError(buildResult, 'Cannot build Lean project.')
+        if (buildResult.kind !== 'Success') {
+            displayLakeRunnerError(buildResult, 'Cannot build Lean project.')
             return
         }
 
@@ -182,7 +196,8 @@ export class ProjectInitializationProvider implements Disposable {
         await workspace.fs.createDirectory(projectFolder.asUri())
 
         const preconditionCheckResult = await checkCreateLean4ProjectPreconditions(
-            this.installer,
+            this.leanInstaller,
+            this.depInstaller,
             context,
             projectFolder,
             toolchain,
@@ -192,30 +207,33 @@ export class ProjectInitializationProvider implements Disposable {
         }
 
         const projectName: string = projectFolder.baseName()
-        const result: ExecutionResult = await lake({
+        const result: LakeRunnerResult = await lake({
             channel: this.channel,
             cwdUri: projectFolder,
             context,
             toolchain,
             toolchainUpdateMode: 'UpdateAutomatically',
         }).initProject(projectName, kind)
-        if (result.exitCode !== ExecutionExitCode.Success) {
-            displayResultError(result, 'Cannot initialize project.')
+        if (result.kind === 'Cancelled') {
+            return 'DidNotComplete'
+        }
+        if (result.kind !== 'Success') {
+            displayLakeRunnerError(result, 'Cannot initialize project.')
             return 'DidNotComplete'
         }
 
-        const updateResult: ExecutionResult = await lake({
+        const updateResult: LakeRunnerResult = await lake({
             channel: this.channel,
             cwdUri: projectFolder,
             context,
             toolchain,
             toolchainUpdateMode: 'UpdateAutomatically',
         }).updateDependencies()
-        if (updateResult.exitCode === ExecutionExitCode.Cancelled) {
+        if (updateResult.kind === 'Cancelled') {
             return 'DidNotComplete'
         }
-        if (updateResult.exitCode !== ExecutionExitCode.Success) {
-            displayResultError(updateResult, 'Cannot update dependencies.')
+        if (updateResult.kind !== 'Success') {
+            displayLakeRunnerError(updateResult, 'Cannot update dependencies.')
             return 'DidNotComplete'
         }
 
@@ -364,7 +382,8 @@ Open this project instead?`
             await workspace.fs.createDirectory(projectFolder.asUri())
 
             const preCloneCheckResult = await checkPreCloneLean4ProjectPreconditions(
-                this.installer.getOutputChannel(),
+                this.depInstaller,
+                this.leanInstaller.getOutputChannel(),
                 projectFolder,
             )
             if (preCloneCheckResult === 'Fatal') {
@@ -387,7 +406,7 @@ Open this project instead?`
             }
 
             const postCloneCheckResult = await checkPostCloneLean4ProjectPreconditions(
-                this.installer,
+                this.leanInstaller,
                 downloadProjectContext,
                 projectFolder,
             )
@@ -395,14 +414,24 @@ Open this project instead?`
                 return
             }
 
-            // Try it. If this is not a mathlib project, it will fail silently. Otherwise, it will grab the cache.
-            const fetchResult: ExecutionResult = await lake({
+            const lakeRunner = lake({
                 channel: this.channel,
                 cwdUri: projectFolder,
                 context: downloadProjectContext,
                 toolchainUpdateMode: 'UpdateAutomatically',
-            }).fetchMathlibCache(true)
-            if (fetchResult.exitCode === ExecutionExitCode.Cancelled) {
+            })
+
+            const resolveResult: LakeRunnerResult = await lakeRunner.resolveDeps()
+            if (resolveResult.kind === 'Cancelled') {
+                return
+            }
+            if (resolveResult.kind !== 'Success') {
+                displayLakeRunnerError(resolveResult, 'Cannot clone missing project dependencies.')
+                return
+            }
+
+            const fetchResult: 'Success' | 'Failure' = await lakeRunner.tryFetchMathlibCacheWithError()
+            if (fetchResult !== 'Success') {
                 return
             }
 

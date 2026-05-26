@@ -1,13 +1,14 @@
-import * as cp from 'child_process'
+import * as p from 'child_process'
 import * as path from 'path'
 
 import { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath, runTests } from '@vscode/test-electron'
 import * as fs from 'fs'
+import * as os from 'os'
 import { logger } from '../../src/utils/logger'
 
 function clearUserWorkspaceData(vscodeTest: string) {
     const workspaceData = path.join(vscodeTest, 'user-data', 'Workspaces')
-    fs.rmdir(workspaceData, { recursive: true }, err => {
+    fs.rm(workspaceData, { recursive: true }, err => {
         logger.log(`deleted user workspace data ${workspaceData} is deleted!`)
     })
 }
@@ -43,17 +44,20 @@ async function main() {
             vscodeExecutablePath = await downloadAndUnzipVSCode()
         }
 
-        // Install the lean3 extension!
-        const [cli, ...args] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath)
-        cp.spawnSync(cli, [...args, '--install-extension', 'jroesch.lean'], {
-            encoding: 'utf-8',
-            stdio: 'inherit',
-        })
+        const [cliPath, ...cliCommonArguments] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath)
+        const result = p.spawnSync(
+            cliPath,
+            [...cliCommonArguments, '--install-extension', 'tamasfe.even-better-toml', '--force'],
+            {
+                encoding: 'utf-8',
+                stdio: 'inherit',
+                shell: process.platform === 'win32',
+            },
+        )
+        if (result.error !== undefined) {
+            throw new Error('Got error while installing dependency: ${result.error}')
+        }
 
-        clearUserWorkspaceData(vscodeTestPath)
-
-        // The '--new-window' doesn't see to be working, so this hack
-        // ensures the following test does not re-open the previous folder
         clearUserWorkspaceData(vscodeTestPath)
 
         // run bootstrap tests
@@ -64,11 +68,6 @@ async function main() {
             extensionTestsEnv: { LEAN4_TEST_FOLDER: 'bootstrap', DEFAULT_LEAN_TOOLCHAIN: test_version },
             launchArgs: ['--new-window', '--disable-gpu'],
         })
-
-        clearUserWorkspaceData(vscodeTestPath)
-
-        // now that elan is installed we can run the lean3 test in one vs code instance,
-        // using `open folder` since lean3 doesn't like ad-hoc files.
 
         clearUserWorkspaceData(vscodeTestPath)
 
@@ -113,19 +112,6 @@ async function main() {
         // ensures the following test does not re-open the previous folder
         clearUserWorkspaceData(vscodeTestPath)
 
-        // run the lean4 toolchain tests, also reusing the 'simple' project.
-        await runTests({
-            vscodeExecutablePath,
-            extensionDevelopmentPath,
-            extensionTestsPath: path.resolve(__dirname, 'index'),
-            extensionTestsEnv: { LEAN4_TEST_FOLDER: 'toolchains', DEFAULT_LEAN_TOOLCHAIN: test_version },
-            launchArgs: ['--new-window', '--disable-gpu', lean4TestFolder],
-        })
-
-        // The '--new-window' doesn't see to be working, so this hack
-        // ensures the following test does not re-open the previous folder
-        clearUserWorkspaceData(vscodeTestPath)
-
         // run the lean4 restart tests, also reusing the 'simple' project.
         await runTests({
             vscodeExecutablePath,
@@ -155,6 +141,22 @@ async function main() {
             extensionTestsEnv: { LEAN4_TEST_FOLDER: 'multi', DEFAULT_LEAN_TOOLCHAIN: test_version },
             launchArgs: ['--new-window', '--disable-gpu', workspacePath],
         })
+
+        const lakeFileTempTestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lakefileTomlSchema'))
+        fs.cpSync(lean4TestFolder, lakeFileTempTestDir, { recursive: true })
+
+        // The '--new-window' doesn't see to be working, so this hack
+        // ensures the following test does not re-open the previous folder
+        clearUserWorkspaceData(vscodeTestPath)
+
+        await runTests({
+            vscodeExecutablePath,
+            extensionDevelopmentPath,
+            extensionTestsPath: path.resolve(__dirname, 'index'),
+            extensionTestsEnv: { LEAN4_TEST_FOLDER: 'lakefileTomlSchema', DEFAULT_LEAN_TOOLCHAIN: test_version },
+            launchArgs: ['--new-window', '--disable-gpu', lakeFileTempTestDir],
+        })
+        fs.rmSync(lakeFileTempTestDir, { recursive: true })
     } catch (err) {
         console.error('Failed to run tests')
         console.error(err.message)

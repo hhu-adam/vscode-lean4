@@ -1,4 +1,10 @@
-import type { DocumentUri, Position, TextDocumentPositionParams } from 'vscode-languageserver-protocol'
+import type {
+    DocumentUri,
+    Position,
+    ServerCapabilities,
+    TextDocumentPositionParams,
+} from 'vscode-languageserver-protocol'
+import { ClientRequestOptions, LeanServerCapabilities } from './infoviewApi'
 import { RpcCallParams, RpcErrorCode, RpcPtr, RpcReleaseParams } from './lspTypes'
 
 /**
@@ -23,7 +29,7 @@ export interface RpcServerIface {
     /** Closes an RPC session created with {@link createRpcSession}. */
     closeRpcSession(sessionId: string): void
     /** Sends an RPC call to the Lean server. */
-    call(request: RpcCallParams): Promise<any>
+    call(request: RpcCallParams, options?: ClientRequestOptions): Promise<any>
     /** Sends an RPC reference release notification to the server. */
     release(request: RpcReleaseParams): void
 }
@@ -45,9 +51,10 @@ export interface RpcSessionAtPos {
      *
      * @param method fully qualified name of the method to call.
      * @param params arguments to the invoked method.
+     * @param options additional configuration for the request.
      * @returns a promise that resolves to the returned value, or an error in case the call fails.
      */
-    call<T, S>(method: string, params: T): Promise<S>
+    call<T, S>(method: string, params: T, options?: ClientRequestOptions): Promise<S>
 }
 
 /**
@@ -81,6 +88,7 @@ class RpcSessionForFile {
     constructor(
         public uri: DocumentUri,
         public sessions: RpcSessions,
+        private serverCapabilities: ServerCapabilities<LeanServerCapabilities>,
     ) {
         this.sessionId = (async () => {
             try {
@@ -131,23 +139,34 @@ class RpcSessionForFile {
      * for future garbage collection.
      *
      * The function implements a form of "conservative garbage collection"
-     * where it treats any subobject `{'p': v}` as a potential RPC reference.
-     * Therefore `p` should not be used as a field name on the Lean side
+     * where it treats any subobject `{'__rpcref': v}` as a potential RPC reference.
+     * Therefore `__rpcref` should not be used as a field name on the Lean side
      * to prevent false positives.
      *
-     * It is unclear if the false positives will become a big issue.
      * Earlier versions of the extension
      * had manually written registration functions for every type,
      * but those are a lot of boilerplate.
      * If we change back to that approach,
      * we should generate them automatically.
+     * It would also be possible to move to a new RPC wire format
+     * that specifies which values are references using metadata.
      */
     registerRefs(o: any) {
         if (o instanceof Object) {
-            if (Object.keys(o as {}).length === 1 && 'p' in o && typeof o.p !== 'object') {
-                this.finalizers.register(o as {}, RpcPtr.copy(o as RpcPtr<any>))
+            let isRef = false
+            if (this.serverCapabilities.experimental?.rpcProvider?.rpcWireFormat === 'v1') {
+                if (Object.keys(o as {}).length === 1 && '__rpcref' in o && typeof o.__rpcref === 'string') {
+                    this.finalizers.register(o as {}, RpcPtr.copy(o as RpcPtr<any>))
+                    isRef = true
+                }
             } else {
-                for (const v of Object.values(o as {})) this.registerRefs(v)
+                if (Object.keys(o as {}).length === 1 && 'p' in o && typeof o.p === 'string') {
+                    this.finalizers.register(o as {}, RpcPtr.copy(o as RpcPtr<any>))
+                    isRef = true
+                }
+            }
+            if (!isRef) {
+                for (const v of Object.values(o)) this.registerRefs(v)
             }
         } else if (o instanceof Array) {
             for (const e of o) this.registerRefs(e)
@@ -181,14 +200,15 @@ class RpcSessionForFile {
      * @param position within the file identified by {@link uri}, used to resolve the set of available RPC methods.
      * @param method fully qualified name of the method to call.
      * @param params arguments to the invoked method.
+     * @param options additional configuration for the request.
      * @returns a promise that resolves to the returned value, or to an error in case the call fails.
      */
-    async call(position: Position, method: string, params: any): Promise<any> {
+    async call(position: Position, method: string, params: any, options?: ClientRequestOptions): Promise<any> {
         const sessionId = await this.sessionId
         if (this.failed) throw this.failed
         const tdpp: TextDocumentPositionParams = { position, textDocument: { uri: this.uri } }
         try {
-            const result = await this.sessions.iface.call({ method, params, sessionId, ...tdpp })
+            const result = await this.sessions.iface.call({ method, params, sessionId, ...tdpp }, options)
             this.registerRefs(result)
             // HACK: most of our types are `T | undefined` so try to return something matching that interface
             if (result === null) return undefined
@@ -216,7 +236,9 @@ class RpcSessionForFile {
         // As JS tradition dictates, we use stringification for deep comparison of `Position`s in a `Map`.
         const posStr = `${position.line}:${position.character}`
         if (this.sessionsAtPos.has(posStr)) return this.sessionsAtPos.get(posStr) as RpcSessionAtPos
-        const atPos: RpcSessionAtPos = { call: (method, params) => this.call(position, method, params) }
+        const atPos: RpcSessionAtPos = {
+            call: (method, params, options) => this.call(position, method, params, options),
+        }
         this.sessionsAtPos.set(posStr, atPos)
         return atPos
     }
@@ -235,9 +257,12 @@ export class RpcSessions {
 
     constructor(public iface: RpcServerIface) {}
 
-    private connectCore(uri: DocumentUri): RpcSessionForFile {
+    private connectCore(
+        uri: DocumentUri,
+        serverCapabilities: ServerCapabilities<LeanServerCapabilities>,
+    ): RpcSessionForFile {
         if (this.sessions.has(uri)) return this.sessions.get(uri) as RpcSessionForFile
-        const sess = new RpcSessionForFile(uri, this)
+        const sess = new RpcSessionForFile(uri, this, serverCapabilities)
         this.sessions.set(uri, sess)
         return sess
     }
@@ -249,8 +274,11 @@ export class RpcSessions {
      * A new session is only created if a fatal error occurs (the worker crashes)
      * or the session is closed manually (the file is closed).
      */
-    connect(pos: TextDocumentPositionParams): RpcSessionAtPos {
-        return this.connectCore(pos.textDocument.uri).at(pos.position)
+    connect(
+        pos: TextDocumentPositionParams,
+        serverCapabilities: ServerCapabilities<LeanServerCapabilities>,
+    ): RpcSessionAtPos {
+        return this.connectCore(pos.textDocument.uri, serverCapabilities).at(pos.position)
     }
 
     /** Closes the session for the given URI. */

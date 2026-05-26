@@ -1,11 +1,16 @@
 {
     "name": "@leanprover/infoview-api",
-    "version": "0.7.0",
+    "version": "0.13.0",
     "description": "Types and API for @leanprover/infoview.",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/leanprover/vscode-lean4.git"
+    },
     "scripts": {
         "watch": "tsc --watch",
         "watchTest": "tsc --watch",
-        "build": "tsc"
+        "build": "tsc --sourceMap false",
+        "build:dev": "tsc"
     },
     "main": "dist/index",
     "types": "dist/index",

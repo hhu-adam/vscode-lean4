@@ -17,21 +17,20 @@ import {
 import { FileUri } from './exturi'
 import { displayNotification, displayNotificationWithInput } from './notifs'
 
+export const leanVersionRegex = /version ([^,\s]+)/
+
 export type ToolchainUpdateMode = 'UpdateAutomatically' | 'PromptAboutUpdate' | 'DoNotUpdate'
 
 function shouldUpdateToolchainAutomatically(mode: ToolchainUpdateMode) {
     return !alwaysAskBeforeInstallingLeanVersions() && mode === 'UpdateAutomatically'
 }
 
-export type ToolchainDecisionOptions = {
+export type LeanCommandOptions = {
     channel: OutputChannel | undefined
     cwdUri: FileUri | undefined
     context: string | undefined
     toolchainUpdateMode: ToolchainUpdateMode
     toolchain?: string | undefined
-}
-
-export type LeanCommandOptions = ToolchainDecisionOptions & {
     waitingPrompt: string
     translator?: ((line: string) => string | undefined) | undefined
 }
@@ -150,7 +149,7 @@ export class LeanCommandRunner {
             return runWithActiveToolchain
         }
 
-        if (unresolvedToolchain.kind === 'Local') {
+        if (unresolvedToolchain.kind === 'Local' || unresolvedToolchain.kind === 'Path') {
             return runWithActiveToolchain
         }
 
@@ -256,7 +255,11 @@ export class LeanCommandRunner {
             return runWithActiveToolchain
         }
 
-        if (unresolvedToolchain.kind === 'Local' || unresolvedToolchain.fromChannel === undefined) {
+        if (
+            unresolvedToolchain.kind === 'Local' ||
+            unresolvedToolchain.kind === 'Path' ||
+            unresolvedToolchain.fromChannel === undefined
+        ) {
             return runWithActiveToolchain
         }
 
@@ -327,7 +330,7 @@ export class LeanCommandRunner {
     }
 
     async decideToolchain(
-        options: ToolchainDecisionOptions,
+        options: LeanCommandOptions,
     ): Promise<
         | { kind: 'RunWithActiveToolchain' }
         | { kind: 'RunWithSpecificToolchain'; toolchain: string }
@@ -357,6 +360,7 @@ export class LeanCommandRunner {
             options.cwdUri,
             options.context,
             options.toolchain,
+            options.waitingPrompt,
         )
         const withNetAnalysisResult = await this.analyzeElanDumpStateWithNetResult(
             options.channel,

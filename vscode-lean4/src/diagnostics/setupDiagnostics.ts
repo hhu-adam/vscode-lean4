@@ -1,7 +1,7 @@
 import { SemVer } from 'semver'
 import { OutputChannel, commands } from 'vscode'
+import { DepInstaller } from '../utils/depInstaller'
 import { ExtUri, FileUri, extUriToCwdUri } from '../utils/exturi'
-import { displayInternalError } from '../utils/internalErrors'
 import { ToolchainUpdateMode } from '../utils/leanCmdRunner'
 import { LeanInstaller } from '../utils/leanInstaller'
 import { diagnose } from './setupDiagnoser'
@@ -27,27 +27,11 @@ Open this project instead?`
 
 const lean3ProjectErrorMessage = (origin: string, projectVersion: SemVer) =>
     `${origin} is using Lean 3 (version: ${projectVersion.toString()}).
-If you want to use Lean 3, disable this extension ('Extensions' in the left sidebar > Cog icon on 'lean4' > 'Disable') and install the 'lean' extension for Lean 3 support.`
+If you wish to use Lean 3, disable this extension ('Extensions' in the left sidebar > Cog icon on 'lean4' > 'Disable') and install the 'lean' extension for Lean 3 support.`
 
 const ancientLean4ProjectWarningMessage = (origin: string, projectVersion: SemVer) =>
     `${origin} is using a Lean 4 version (${projectVersion.toString()}) from before the first Lean 4 stable release (4.0.0).
 Pre-stable Lean 4 versions are increasingly less supported, so please consider updating to a newer Lean 4 version.`
-
-const oldServerFolderContainsNewServerFolderErrorMessage = (
-    folderUri: FileUri,
-    fileUri: FileUri,
-    clientFolderUri: FileUri,
-) =>
-    `Error while starting language server: The project at '${folderUri.fsPath}' of the file '${fileUri.baseName()}' is contained inside of another project at '${clientFolderUri.fsPath}', for which a language server is already running.
-The Lean 4 VS Code extension does not support nested Lean projects.`
-
-const newServerFolderContainsOldServerFolderErrorMessage = (
-    folderUri: FileUri,
-    fileUri: FileUri,
-    clientFolderUri: FileUri,
-) =>
-    `Error while starting language server: The project at '${folderUri.fsPath}' of the file '${fileUri.baseName()}' contains another project at '${clientFolderUri.fsPath}', for which a language server is already running.
-The Lean 4 VS Code extension does not support nested Lean projects.`
 
 export class SetupDiagnostics {
     private n: SetupNotifier
@@ -57,6 +41,7 @@ export class SetupDiagnostics {
     }
 
     async checkAreDependenciesInstalled(
+        installer: DepInstaller,
         channel: OutputChannel,
         cwdUri: FileUri | undefined,
     ): Promise<PreconditionCheckResult> {
@@ -72,13 +57,11 @@ export class SetupDiagnostics {
         }
         let missingDepMessage: string
         if (missingDeps.length === 1) {
-            missingDepMessage = `One of Lean's dependencies ('${missingDeps.at(0)}') is missing`
+            missingDepMessage = `One of Lean's dependencies (\`${missingDeps.at(0)}\`) is missing.`
         } else {
-            missingDepMessage = `Multiple of Lean's dependencies (${missingDeps.map(dep => `'${dep}'`).join(', ')}) are missing`
+            missingDepMessage = `Multiple of Lean's dependencies (${missingDeps.map(dep => `\`${dep}\``).join(', ')}) are missing.`
         }
-
-        const errorMessage = `${missingDepMessage}. Please read the Setup Guide on how to install missing dependencies and set up Lean 4.`
-        return await this.n.displaySetupErrorWithSetupGuide(errorMessage)
+        return await this.n.displayDependencySetupError(installer, missingDepMessage)
     }
 
     async checkIsLean4Installed(
@@ -180,56 +163,6 @@ export class SetupDiagnostics {
         }
     }
 
-    async checkIsNestedProjectFolder(
-        existingFolderUris: ExtUri[],
-        folderUri: ExtUri,
-        fileUri: ExtUri,
-        stopOtherServer: (folderUri: FileUri) => Promise<void>,
-    ): Promise<PreconditionCheckResult> {
-        if (folderUri.scheme === 'untitled' || fileUri.scheme === 'untitled') {
-            if (existingFolderUris.some(existingFolderUri => existingFolderUri.scheme === 'untitled')) {
-                await displayInternalError(
-                    'starting language server',
-                    'Attempting to start new untitled language server while one already exists.',
-                )
-                return 'Fatal'
-            }
-            return 'Fulfilled'
-        }
-
-        for (const existingFolderUri of existingFolderUris) {
-            if (existingFolderUri.scheme !== 'file') {
-                continue
-            }
-            if (existingFolderUri.isInFolder(folderUri)) {
-                return await this.n.displaySetupErrorWithInput(
-                    newServerFolderContainsOldServerFolderErrorMessage(folderUri, fileUri, existingFolderUri),
-                    [
-                        {
-                            input: 'Stop Other Server',
-                            continueDisplaying: false,
-                            action: () => stopOtherServer(existingFolderUri),
-                        },
-                    ],
-                )
-            }
-            if (folderUri.isInFolder(existingFolderUri)) {
-                return await this.n.displaySetupErrorWithInput(
-                    oldServerFolderContainsNewServerFolderErrorMessage(folderUri, fileUri, existingFolderUri),
-                    [
-                        {
-                            input: 'Stop Other Server',
-                            continueDisplaying: false,
-                            action: () => stopOtherServer(existingFolderUri),
-                        },
-                    ],
-                )
-            }
-        }
-
-        return 'Fulfilled'
-    }
-
     async checkIsLeanVersionUpToDate(
         channel: OutputChannel,
         context: string,
@@ -323,6 +256,16 @@ export class SetupDiagnostics {
             case 'UpToDate':
                 return 'Fulfilled'
         }
+    }
+
+    async checkIsOperatingSystemSupported(): Promise<PreconditionCheckResult> {
+        const systemInfo = diagnose({ channel: undefined, cwdUri: undefined }).querySystemInformation()
+        if (systemInfo.osVersionDiagnosis.kind === 'Unsupported') {
+            return await this.n.displaySetupWarning(
+                `Operating system version is unsupported. The current OS version is ${systemInfo.osType} (${systemInfo.osVersionDiagnosis.currentVersion}), but a version of at least ${systemInfo.osType} (${systemInfo.osVersionDiagnosis.recommendedVersion}) is recommended to run new Lean versions.`,
+            )
+        }
+        return 'Fulfilled'
     }
 }
 

@@ -69,17 +69,19 @@ declare const tag: unique symbol
  * which we need to be able to reference but which would be too large to
  * send over directly.
  */
-export type RpcPtr<T> = { readonly [tag]: T; p: string }
+export type RpcPtr<T> = { readonly [tag]: T; __rpcref: string } | { readonly [tag]: T; p: string }
 
 // eslint-disable-next-line @typescript-eslint/no-namespace
 export namespace RpcPtr {
     export function copy<T>(p: RpcPtr<T>): RpcPtr<T> {
-        return { p: p.p } as RpcPtr<T>
+        if ('p' in p) return { p: p.p } as RpcPtr<T>
+        else return { __rpcref: p.__rpcref } as RpcPtr<T>
     }
 
     /** Turns a reference into a unique string. Useful for React `key`s. */
     export function toKey(p: RpcPtr<any>): string {
-        return p.p
+        if ('p' in p) return p.p
+        else return p.__rpcref
     }
 }
 
@@ -128,6 +130,8 @@ export interface RpcError {
     message: string
 }
 
-export function isRpcError(x: any): x is RpcError {
-    return !!(x?.code && x?.message)
+export function isRpcError(x: unknown): x is RpcError {
+    if (x == null || typeof x !== 'object') return false
+    const obj = x as Record<string, unknown>
+    return typeof obj.code === 'number' && typeof obj.message === 'string'
 }

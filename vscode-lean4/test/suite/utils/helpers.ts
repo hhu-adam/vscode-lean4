@@ -35,6 +35,7 @@ export async function initLean4(fileName: string): Promise<EnabledFeatures> {
     const lean = await waitForActiveExtension('leanprover.lean4', 60)
     assertAndLog(lean, 'Lean extension not loaded')
     assertAndLog(lean.isActive, 'Lean extension is not active')
+    assertAndLog(lean.exports !== undefined, 'Lean extension exports not active')
     logger.log(`Found lean package version: ${lean.packageJSON.version}`)
 
     const doc = await vscode.workspace.openTextDocument(fileName)
@@ -124,6 +125,8 @@ export async function initLean4Untitled(contents: string): Promise<EnabledFeatur
 
     const lean = await waitForActiveExtension('leanprover.lean4', 60)
     assertAndLog(lean, 'Lean extension not loaded')
+    assertAndLog(lean.isActive, 'Lean extension is not active')
+    assertAndLog(lean.exports !== undefined, 'Lean extension exports not active')
     logger.log(`Found lean package version: ${lean.packageJSON.version}`)
     const features = await waitForLean4FeatureActivation(lean.exports)
     const info = features.infoProvider
@@ -132,6 +135,9 @@ export async function initLean4Untitled(contents: string): Promise<EnabledFeatur
     // If info view opens too quickly there is no LeanClient ready yet and
     // it's initialization gets messed up.
     assertAndLog(await waitForInfoViewOpen(info, 60), 'Info view did not open after 60 seconds')
+    // Reusing the Untitled-1 URI across tests can leave the InfoProvider bound to a stale
+    // client; wait until a fresh client for this document is running before returning.
+    await waitForActiveClientRunning(features.clientProvider)
     return features
 }
 
@@ -322,7 +328,7 @@ function nullHandler() {
 export function cleanTempFolder(name: string) {
     const path = join(os.tmpdir(), name)
     if (fs.existsSync(path)) {
-        fs.rmdirSync(path, { recursive: true })
+        fs.rmSync(path, { recursive: true })
     }
 }
 
@@ -442,19 +448,18 @@ export async function findWord(
     retries = 60,
     delay = 1000,
 ): Promise<vscode.Range> {
-    let count = 0
+    const totalRetries = retries
     while (retries > 0) {
         const text = editor.document.getText()
         const pos = text.indexOf(word)
-        if (pos < 0) {
-            await sleep(delay)
-            count += 1
-        } else {
+        if (pos >= 0) {
             return new vscode.Range(editor.document.positionAt(pos), editor.document.positionAt(pos + word.length))
         }
+        await sleep(delay)
+        retries -= 1
     }
 
-    const timeout = (retries * delay) / 1000
+    const timeout = (totalRetries * delay) / 1000
     assertAndLog(false, `word ${word} not found in editor after ${timeout} seconds`)
 }
 
@@ -538,6 +543,7 @@ export async function clickInfoViewButton(info: InfoProvider, name: string): Pro
         try {
             const cmd = `document.querySelector(\'[data-id*="${name}"]\').click()`
             await info.runTestScript(cmd)
+            return
         } catch (err) {
             logger.log(`### runTestScript failed: ${err.message}`)
             if (retries === 0) {
@@ -584,15 +590,9 @@ export function copyFolder(source: string, target: string) {
 }
 
 export function getTestLeanVersion() {
-    const testsRoot = path.join(__dirname, '..', '..', '..', '..', 'test')
-    const multiFoo = path.join(testsRoot, 'test-fixtures', 'simple')
-    const toolchain = fs.readFileSync(path.join(multiFoo, 'lean-toolchain'), 'utf8').toString()
-    return toolchain.trim().split(':')[1]
+    return 'nightly-2022-10-26'
 }
 
 export function getAltBuildVersion() {
-    const testsRoot = path.join(__dirname, '..', '..', '..', '..', 'test')
-    const multiFoo = path.join(testsRoot, 'test-fixtures', 'multi', 'foo')
-    const toolchain = fs.readFileSync(path.join(multiFoo, 'lean-toolchain'), 'utf8').toString()
-    return toolchain.trim().split(':')[1]
+    return 'nightly-2022-10-20'
 }
