@@ -78,10 +78,14 @@ function routePackagesDir(uri: FileUri): FileUri {
 
 // Find the root of a Lean project and the Uri for the 'lean-toolchain' file found there.
 export async function findLeanProjectRootInfo(uri: ExtUri): Promise<ProjectRootInfo> {
+
     if (uri.scheme === 'untitled') {
         return { kind: 'Success', projectRootUri: new UntitledUri(), toolchainUri: undefined }
     }
 
+    // lean4monaco: Prevent filesystem access:
+    return { kind: 'Success', projectRootUri: uri.join('..'), toolchainUri: undefined }
+    /*
     let uriDir: FileUri
     try {
         if ((await fs.promises.stat(uri.fsPath)).isFile()) {
@@ -129,6 +133,7 @@ export async function findLeanProjectRootInfo(uri: ExtUri): Promise<ProjectRootI
     }
 
     return { kind: 'Success', projectRootUri: uriDir, toolchainUri: undefined }
+    */
 }
 
 export async function findLeanProjectInfo(uri: FileUri): Promise<ProjectInfo> {

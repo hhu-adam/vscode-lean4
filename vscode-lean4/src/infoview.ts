@@ -18,12 +18,14 @@ import {
     Disposable,
     env,
     ExtensionContext,
+    Event,
     Position,
     Range,
     Selection,
     TextEditor,
     TextEditorRevealType,
     Uri,
+    ViewColumn,
     WebviewPanel,
     window,
     workspace,
@@ -58,6 +60,7 @@ import { lean, LeanEditor } from './utils/leanEditorProvider'
 import { logger } from './utils/logger'
 import { displayNotification } from './utils/notifs'
 import { viewColumnOfActiveTextEditor, viewColumnOfInfoView } from './utils/viewColumn'
+import { IFrameInfoWebview, IFrameInfoWebviewFactory } from '../../../infowebview'
 
 const keepAlivePeriodMs = 10000
 
@@ -67,7 +70,7 @@ async function rpcConnect(client: LeanClient, uri: ls.DocumentUri): Promise<stri
     return result.sessionId
 }
 
-class RpcSessionAtPos implements Disposable {
+export class RpcSessionAtPos implements Disposable {
     keepAliveInterval?: NodeJS.Timeout
     client: LeanClient
 
@@ -96,7 +99,7 @@ class RpcSessionAtPos implements Disposable {
 
 export class InfoProvider implements Disposable {
     /** Instance of the panel, if it is open. Otherwise `undefined`. */
-    private webviewPanel?: WebviewPanel & { rpc: Rpc; api: InfoviewApi }
+    private webviewPanel?: IFrameInfoWebview
     /** The InfoProvider's subscriptions, to be cleaned up when it is disposed. */
     private subscriptions: Disposable[] = []
 
@@ -427,6 +430,7 @@ export class InfoProvider implements Disposable {
     constructor(
         private clientProvider: LeanClientProvider,
         private context: ExtensionContext,
+        private infoWebviewFactory: IFrameInfoWebviewFactory,
     ) {
         this.updateStylesheet()
 
@@ -831,7 +835,8 @@ export class InfoProvider implements Disposable {
         if (this.webviewPanel) {
             this.webviewPanel.reveal(undefined, true)
         } else {
-            const webviewPanel = window.createWebviewPanel(
+            const webviewPanel = this.infoWebviewFactory.make(this.editorApi, this.stylesheet)
+            /*
                 'lean4_infoview',
                 'Lean InfoView',
                 { viewColumn: viewColumnOfInfoView(), preserveFocus: true },
@@ -866,6 +871,7 @@ export class InfoProvider implements Disposable {
                 }
             })
             webviewPanel.api = webviewPanel.rpc.getApi()
+            */
             webviewPanel.onDidDispose(() => {
                 this.webviewPanel = undefined
                 this.clearNotificationHandlers()
@@ -874,7 +880,6 @@ export class InfoProvider implements Disposable {
                 this.clientRequests = new Map()
             })
             this.webviewPanel = webviewPanel
-            webviewPanel.webview.html = this.initialHtml()
 
             const client = this.clientProvider.findClient(leanEditor.documentExtUri)
             await this.initInfoView(leanEditor, client)
@@ -1078,7 +1083,6 @@ export class InfoProvider implements Disposable {
 
     private getLocalPath(path: string): string | undefined {
         if (this.webviewPanel) {
-            return this.webviewPanel.webview.asWebviewUri(Uri.file(join(this.context.extensionPath, path))).toString()
         }
         return undefined
     }

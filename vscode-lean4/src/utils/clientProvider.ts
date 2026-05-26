@@ -9,6 +9,7 @@ import { lean } from './leanEditorProvider'
 import { logger } from './logger'
 import { displayNotification } from './notifs'
 import { findLeanProjectRootInfo, willUseLakeServer } from './projectInfo'
+import { BaseLanguageClient, LanguageClientOptions } from 'vscode-languageclient/node'
 
 async function checkLean4ProjectPreconditions(
     channel: OutputChannel,
@@ -62,7 +63,10 @@ export class LeanClientProvider implements Disposable {
     private clientStoppedEmitter = new EventEmitter<[LeanClient, boolean, ServerStoppedReason]>()
     clientStopped = this.clientStoppedEmitter.event
 
-    constructor(outputChannel: OutputChannel) {
+    constructor(
+        outputChannel: OutputChannel,
+        private setupClient: (clientOptions: LanguageClientOptions) => Promise<BaseLanguageClient>,
+    ) {
         this.outputChannel = outputChannel
 
         lean.visibleLeanEditors.forEach(e => this.ensureClient(e.documentExtUri))
@@ -274,7 +278,8 @@ export class LeanClientProvider implements Disposable {
             return [false, undefined]
         }
         this.pending.set(key, true)
-
+        // lean4monaco: The precondition checks require a file system or executables, which we don't have in the browser.
+        /*
         const preconditionCheckResult = await checkLean4ProjectPreconditions(
             this.outputChannel,
             'Client Startup',
@@ -291,9 +296,10 @@ export class LeanClientProvider implements Disposable {
             this.activeClient = undefined
             return [false, undefined]
         }
+        */
 
         logger.log('[ClientProvider] Creating LeanClient for ' + folderUri.toString())
-        client = await LeanClient.init(folderUri, this.outputChannel)
+        client = await LeanClient.init(folderUri, this.outputChannel, this.setupClient)
         this.subscriptions.push(client)
         this.clients.set(key, client)
 

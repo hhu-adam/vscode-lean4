@@ -59,6 +59,10 @@ export class VSCodeAbbreviationRewriter implements AbbreviationTextSource {
                     newText: changeEvent.text,
                 }))
                 this.rewriter.changeInput(changes)
+
+                // lean4monaco: We need to wait for changes to take effect. Otherwise, the cursor will be at the wrong position.
+                await new Promise(resolve => setTimeout(resolve, 0));
+
                 await this.rewriter.triggerAbbreviationReplacement()
 
                 this.updateState()
@@ -89,7 +93,8 @@ export class VSCodeAbbreviationRewriter implements AbbreviationTextSource {
     }
 
     selectionMoveMode(): SelectionMoveMode {
-        return { kind: 'OnlyMoveCursorSelections', updateUnchangedSelections: this.isVimExtensionInstalled }
+        // lean4monaco: This setting ensures that the cursor will move correctly in the browser.
+        return { kind: 'MoveAllSelections' }
     }
 
     collectSelections(): Range[] {

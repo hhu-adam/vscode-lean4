@@ -14,6 +14,7 @@ import {
     WorkspaceFolder,
 } from 'vscode'
 import {
+    BaseLanguageClient,
     ClientCapabilities,
     DiagnosticSeverity,
     DidChangeTextDocumentParams,
@@ -49,7 +50,6 @@ import {
 import { logger } from './utils/logger'
 // @ts-ignore
 import * as fs from 'fs'
-import { glob } from 'glob'
 import { SemVer } from 'semver'
 import { formatCommandExecutionOutput } from './utils/batch'
 import {
@@ -76,6 +76,7 @@ import {
     displayNotificationWithOutput,
 } from './utils/notifs'
 import { lakefileLeanUri, lakefileTomlUri, leanToolchainUri, willUseLakeServer } from './utils/projectInfo'
+import { LanguageClientWrapper } from 'monaco-editor-wrapper'
 
 interface LogConfig {
     logDir?: string | undefined
@@ -123,8 +124,9 @@ export type ServerProgress = Map<ExtUri, LeanFileProgressProcessingInfo[]>
 
 export class LeanClient implements Disposable {
     running: boolean
-    private client: LanguageClient | undefined
+    private client: BaseLanguageClient | undefined
     private outputChannel: OutputChannel
+    private setupLanguageClient: (clientOptions: LanguageClientOptions) => Promise<BaseLanguageClient>
     folderUri: ExtUri
     private subFolderExclusions: FileUri[] | undefined
     private subscriptions: Disposable[] = []
@@ -173,25 +175,14 @@ export class LeanClient implements Disposable {
     private serverFailedEmitter = new EventEmitter<string>()
     serverFailed = this.serverFailedEmitter.event
 
-    static async init(folderUri: ExtUri, outputChannel: OutputChannel): Promise<LeanClient> {
+    static async init(folderUri: ExtUri, outputChannel: OutputChannel, setupLanguageClient: (clientOptions: LanguageClientOptions) => Promise<BaseLanguageClient>): Promise<LeanClient> {
         const c = new LeanClient()
+        c.setupLanguageClient = setupLanguageClient
         c.outputChannel = outputChannel
         c.folderUri = folderUri
         c.subscriptions.push(new Disposable(() => c.staleDepNotifier?.dispose()))
         await c.registerRestartServerNotificationWatchers()
-        if (folderUri.scheme === 'file') {
-            // All nested inner projects are excluded from this project so that we do not
-            // get duplicate language server output for files in a nested inner project.
-            const excludedToolchainPaths = await glob('**/lean-toolchain', {
-                cwd: folderUri.fsPath,
-                // TODO for configurable `.lake/packages`: Run `lake update` if no manifest exists, parse the manifest, grab the packages directory from it
-                ignore: ['lean-toolchain', '.lake/packages/**'],
-                dot: true,
-                absolute: true,
-            })
-            const excludedFolderUris = excludedToolchainPaths.map(t => new FileUri(t).join('..'))
-            c.subFolderExclusions = excludedFolderUris
-        }
+        // lean4monaco: `glob` cannot be used
         return c
     }
 
@@ -470,6 +461,7 @@ export class LeanClient implements Disposable {
     private async determineToolchainOverride(
         defaultToolchain: string | undefined,
     ): Promise<{ kind: 'Override'; toolchain: string } | { kind: 'NoOverride' } | { kind: 'Error'; message: string }> {
+        /*
         const cwdUri = this.folderUri.scheme === 'file' ? this.folderUri : undefined
         const toolchainDecision = await leanRunner.decideToolchain({
             channel: this.outputChannel,
@@ -494,6 +486,7 @@ export class LeanClient implements Disposable {
             // which is not what we want.  For adhoc files we want the (default) toolchain instead.
             return { kind: 'Override', toolchain: defaultToolchain }
         }
+        */
         return { kind: 'NoOverride' }
     }
 
@@ -513,7 +506,7 @@ export class LeanClient implements Disposable {
         const toolchainOverride: string | undefined =
             toolchainOverrideResult.kind === 'Override' ? toolchainOverrideResult.toolchain : undefined
 
-        this.client = await this.setupClient(toolchainOverride)
+        this.client = await this.setupLanguageClient(this.obtainClientOptions())
 
         let insideRestart = true
         try {
@@ -669,7 +662,9 @@ export class LeanClient implements Disposable {
             return true
         }
         if (this.folderUri.scheme === 'file' && uri.scheme === 'file') {
-            return uri.isInFolder(this.folderUri)
+            // lean4monaco: To avoid file system issues, we let any client manage any file:
+            return true
+            // return uri.isInFolder(this.folderUri)
         }
         return false
     }
